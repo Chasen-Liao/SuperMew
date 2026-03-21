@@ -5,13 +5,39 @@ from pathlib import Path
 from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
-from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
+from langchain_core.messages import AIMessageChunk
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.store.memory import InMemoryStore
 from tools import get_current_weather, search_knowledge_base, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
 from datetime import datetime
-from config import API_KEY, MODEL, BASE_URL
+from config import API_KEY, MODEL, BASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+
+
+def create_checkpointer():
+    """创建 PostgresSaver checkpointer"""
+    import psycopg
+    conn = psycopg.connect(
+        f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}",
+        autocommit=True,
+        prepare_threshold=0,
+        row_factory=psycopg.rows.dict_row
+    )
+    checkpointer = PostgresSaver(conn)
+    checkpointer.setup()
+    return checkpointer
+
+
+checkpointer = create_checkpointer()
+
+# 创建 Store（长期记忆）
+store = InMemoryStore()
 
 class ConversationStorage:
-    """对话存储"""
+    """会话列表存储（仅管理会话元数据，不存储消息）
+
+    消息由 checkpointer 自动管理，此处只记录会话的存在和更新时间，
+    用于 API 的会话列表查询和删除功能。
+    """
 
     def __init__(self, storage_file: str = None):
         if storage_file:
@@ -24,52 +50,20 @@ class ConversationStorage:
 
         self.storage_file = storage_path
 
-    def save(self, user_id: str, session_id: str, messages: list, metadata: dict = None, extra_message_data: list = None):
-        """保存对话"""
+    def touch_session(self, user_id: str, session_id: str):
+        """更新会话的最后访问时间（checkpointer 会在首次对话时自动创建会话）"""
         data = self._load()
 
         if user_id not in data:
             data[user_id] = {}
 
-        serialized = []
-        for idx, msg in enumerate(messages):
-            record = {
-                "type": msg.type,
-                "content": msg.content,
-                "timestamp": datetime.now().isoformat()
-            }
-            if extra_message_data and idx < len(extra_message_data):
-                extra = extra_message_data[idx] or {}
-                if "rag_trace" in extra:
-                    record["rag_trace"] = extra["rag_trace"]
-            serialized.append(record)
-
-        data[user_id][session_id] = {
-            "messages": serialized,
-            "metadata": metadata or {},
-            "updated_at": datetime.now().isoformat()
-        }
+        if session_id not in data[user_id]:
+            data[user_id][session_id] = {"updated_at": datetime.now().isoformat()}
+        else:
+            data[user_id][session_id]["updated_at"] = datetime.now().isoformat()
 
         with open(self.storage_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-
-    def load(self, user_id: str, session_id: str) -> list:
-        """加载对话"""
-        data = self._load()
-
-        if user_id not in data or session_id not in data[user_id]:
-            return []
-
-        messages = []
-        for msg_data in data[user_id][session_id]["messages"]:
-            if msg_data["type"] == "human":
-                messages.append(HumanMessage(content=msg_data["content"]))
-            elif msg_data["type"] == "ai":
-                messages.append(AIMessage(content=msg_data["content"]))
-            elif msg_data["type"] == "system":
-                messages.append(SystemMessage(content=msg_data["content"]))
-
-        return messages
 
     def list_sessions(self, user_id: str) -> list:
         """列出用户的所有会话"""
@@ -131,6 +125,8 @@ def create_agent_instance():
         model=model,
         tools=[get_current_weather, search_knowledge_base],
         system_prompt=system_prompt,
+        checkpointer=checkpointer,
+        store=store,
         middleware=[
             SummarizationMiddleware(
                 model=summary_model,
@@ -149,16 +145,19 @@ storage = ConversationStorage()
 
 def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
     """使用 Agent 处理用户消息并返回响应"""
-    messages = storage.load(user_id, session_id)
+    # 使用 thread_id 标识会话，checkpointer 自动管理会话历史
+    config = {"configurable": {"thread_id": f"{user_id}_{session_id}"}, "recursion_limit": 8}
+
+    # 更新会话列表（用于 API 的会话查询）
+    storage.touch_session(user_id, session_id)
 
     # 清理可能残留的 RAG 上下文，避免跨请求污染
     get_last_rag_context(clear=True)
     reset_tool_call_guards()
 
-    messages.append(HumanMessage(content=user_text))
     result = agent.invoke(
-        {"messages": messages},
-        config={"recursion_limit": 8},
+        {"messages": [{"role": "user", "content": user_text}]},
+        config=config,
     )
 
     response_content = ""
@@ -174,14 +173,9 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
         response_content = result.content
     else:
         response_content = str(result)
-    
-    messages.append(AIMessage(content=response_content))
 
     rag_context = get_last_rag_context(clear=True)
     rag_trace = rag_context.get("rag_trace") if rag_context else None
-
-    extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
-    storage.save(user_id, session_id, messages, extra_message_data=extra_message_data)
 
     return {
         "response": response_content,
@@ -189,13 +183,35 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     }
 
 
+def get_session_messages(user_id: str, session_id: str) -> list:
+    """从 checkpointer 获取会话消息"""
+    config = {"configurable": {"thread_id": f"{user_id}_{session_id}"}}
+    checkpoint = checkpointer.get(config)
+    if checkpoint is None:
+        return []
+    # checkpointer 返回格式: {"channel_values": {"messages": [...]}}
+    channel_values = checkpoint.get("channel_values", {})
+    messages = channel_values.get("messages", [])
+    return messages
+
+
+def delete_session_from_checkpointer(user_id: str, session_id: str):
+    """从 checkpointer 删除会话"""
+    config = {"configurable": {"thread_id": f"{user_id}_{session_id}"}}
+    checkpointer.delete(config)
+
+
 async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
     """使用 Agent 处理用户消息并流式返回响应。
-    
+
     架构：使用统一输出队列 + 后台任务，确保 RAG 检索步骤在工具执行期间实时推送，
     而非等待工具完成后才显示。
     """
-    messages = storage.load(user_id, session_id)
+    # 使用 thread_id 标识会话，checkpointer 自动管理会话历史
+    config = {"configurable": {"thread_id": f"{user_id}_{session_id}"}, "recursion_limit": 8}
+
+    # 更新会话列表（用于 API 的会话查询）
+    storage.touch_session(user_id, session_id)
 
     # 清理可能残留的 RAG 上下文
     get_last_rag_context(clear=True)
@@ -211,37 +227,27 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
 
     set_rag_step_queue(_RagStepProxy())
 
-    messages.append(HumanMessage(content=user_text))
-
     full_response = ""
 
     async def _agent_worker():
         """后台任务：运行 agent 并将内容 chunk 推入输出队列。"""
         nonlocal full_response
         try:
-            async for msg, metadata in agent.astream(
-                {"messages": messages},
-                stream_mode="messages",
-                config={"recursion_limit": 8},
+            # 使用同步 stream 方法配合 asyncio.to_thread
+            for chunk in agent.stream(
+                {"messages": [{"role": "user", "content": user_text}]},
+                config=config,
             ):
-                if not isinstance(msg, AIMessageChunk):
-                    continue
-                if getattr(msg, "tool_call_chunks", None):
-                    continue
-
-                content = ""
-                if isinstance(msg.content, str):
-                    content = msg.content
-                elif isinstance(msg.content, list):
-                    for block in msg.content:
-                        if isinstance(block, str):
-                            content += block
-                        elif isinstance(block, dict) and block.get("type") == "text":
-                            content += block.get("text", "")
-
-                if content:
-                    full_response += content
-                    await output_queue.put({"type": "content", "content": content})
+                # chunk 格式: {'model': {'messages': [AIMessage, ...]}}
+                if isinstance(chunk, dict) and "model" in chunk:
+                    model_data = chunk["model"]
+                    if isinstance(model_data, dict) and "messages" in model_data:
+                        messages = model_data["messages"]
+                        if messages and hasattr(messages[-1], "content"):
+                            content = messages[-1].content
+                            if content:
+                                full_response += content
+                                await output_queue.put({"type": "content", "content": content})
         except Exception as e:
             await output_queue.put({"type": "error", "content": str(e)})
         finally:
@@ -284,8 +290,3 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
 
     # 发送结束信号
     yield "data: [DONE]\n\n"
-
-    # 保存对话
-    messages.append(AIMessage(content=full_response))
-    extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
-    storage.save(user_id, session_id, messages, extra_message_data=extra_message_data)

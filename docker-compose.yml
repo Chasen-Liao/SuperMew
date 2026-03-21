@@ -1,6 +1,23 @@
 version: '3.5'
 
 services:
+  postgres:
+    container_name: supermew-postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: supermew
+      POSTGRES_USER: supermew
+      POSTGRES_PASSWORD: supermew123
+    ports:
+      - "5433:5432"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supermew"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   etcd:
     container_name: milvus-etcd
     image: quay.io/coreos/etcd:v3.5.18

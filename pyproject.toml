@@ -19,8 +19,10 @@ dependencies = [
     "langchain-text-splitters>=0.2.2",
     "langchain-openai>=0.1.22",
     "langgraph>=0.2.31",
+    "langgraph-checkpoint-postgres>=0.1.0",
     "pypdf>=4.3.1",
     "docx2txt>=0.8",
+    "langchain-postgres>=0.0.17",
 ]
 
 [project.optional-dependencies]

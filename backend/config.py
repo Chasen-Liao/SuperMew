@@ -41,3 +41,10 @@ AMAP_API_KEY = os.getenv("AMAP_API_KEY")
 # ===== Server =====
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
+
+# ===== PostgreSQL (checkpointer) =====
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1")
+POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5433"))
+POSTGRES_USER = os.getenv("POSTGRES_USER", "supermew")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "supermew123")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "supermew")

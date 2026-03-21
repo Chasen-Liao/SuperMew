@@ -18,7 +18,7 @@ from schemas import (
     DocumentUploadResponse,
     DocumentDeleteResponse,
 )
-from agent import chat_with_agent, chat_with_agent_stream, storage
+from agent import chat_with_agent, chat_with_agent_stream, storage, get_session_messages, delete_session_from_checkpointer
 from document_loader import DocumentLoader
 from parent_chunk_store import ParentChunkStore
 from milvus_writer import MilvusWriter
@@ -39,24 +39,24 @@ router = APIRouter()
 
 
 @router.get("/sessions/{user_id}/{session_id}", response_model=SessionMessagesResponse)
-async def get_session_messages(user_id: str, session_id: str):
+async def get_session_messages_endpoint(user_id: str, session_id: str):
     """获取指定会话的所有消息"""
     try:
-        data = storage._load()
-        if user_id not in data or session_id not in data[user_id]:
-            return SessionMessagesResponse(messages=[])
-        
-        session_data = data[user_id][session_id]
-        messages = []
-        for msg_data in session_data.get("messages", []):
-            messages.append(MessageInfo(
-                type=msg_data["type"],
-                content=msg_data["content"],
-                timestamp=msg_data["timestamp"],
-                rag_trace=msg_data.get("rag_trace")
+        messages = get_session_messages(user_id, session_id)
+        result = []
+        for msg in messages:
+            msg_type = getattr(msg, "type", "unknown")
+            if msg_type == "human":
+                msg_type = "human"
+            elif msg_type == "ai":
+                msg_type = "ai"
+            result.append(MessageInfo(
+                type=msg_type,
+                content=msg.content if hasattr(msg, "content") else str(msg),
+                timestamp=msg.additional_kwargs.get("timestamp") if hasattr(msg, "additional_kwargs") else None,
+                rag_trace=None
             ))
-        
-        return SessionMessagesResponse(messages=messages)
+        return SessionMessagesResponse(messages=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -68,15 +68,17 @@ async def list_sessions(user_id: str):
         data = storage._load()
         if user_id not in data:
             return SessionListResponse(sessions=[])
-        
+
         sessions = []
         for session_id, session_data in data[user_id].items():
+            # 从 checkpointer 获取消息数量
+            messages = get_session_messages(user_id, session_id)
             sessions.append(SessionInfo(
                 session_id=session_id,
                 updated_at=session_data.get("updated_at", ""),
-                message_count=len(session_data.get("messages", []))
+                message_count=len(messages)
             ))
-        
+
         # 按更新时间倒序排列
         sessions.sort(key=lambda x: x.updated_at, reverse=True)
         return SessionListResponse(sessions=sessions)
@@ -88,7 +90,13 @@ async def list_sessions(user_id: str):
 async def delete_session(user_id: str, session_id: str):
     """删除指定会话"""
     try:
+        # 从 ConversationStorage 删除
         deleted = storage.delete_session(user_id, session_id)
+        # 从 checkpointer 删除（忽略是否存在的错误）
+        try:
+            delete_session_from_checkpointer(user_id, session_id)
+        except Exception:
+            pass
         if not deleted:
             raise HTTPException(status_code=404, detail="会话不存在")
         return SessionDeleteResponse(session_id=session_id, message="成功删除会话")
