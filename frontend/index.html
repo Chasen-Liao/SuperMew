@@ -203,6 +203,22 @@
                     </div>
                     <!-- 正常回复内容 -->
                     <div v-else class="message-content" v-html="msg.isUser ? escapeHtml(msg.text) : parseMarkdown(msg.text)"></div>
+
+                    <!-- RAG 步骤持久化显示（回答生成后仍可查看） -->
+                    <div v-if="!msg.isUser && msg.ragSteps && msg.ragSteps.length && !msg.isThinking" class="rag-steps-collapsible">
+                        <details class="rag-steps-details">
+                            <summary class="rag-steps-summary">
+                                <i class="fas fa-search"></i> 检索步骤 ({{ msg.ragSteps.length }} 步)
+                            </summary>
+                            <div class="rag-steps-list">
+                                <div v-for="(step, sIdx) in msg.ragSteps" :key="sIdx" class="rag-step-line">
+                                    <span class="rag-step-icon">{{ step.icon || '▶' }}</span>
+                                    <span class="rag-step-label">{{ step.label }}</span>
+                                    <span v-if="step.detail" class="rag-step-detail">{{ step.detail }}</span>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
                     <div v-if="!msg.isUser && msg.ragTrace" class="message-meta">
                         <details class="reasoning-details">
                             <summary>检索过程</summary>

@@ -3,5 +3,6 @@
     "allow": [
       "mcp__docs-langchain__search_docs_by_lang_chain"
     ]
-  }
+  },
+  "spinnerTipsEnabled": false
 }

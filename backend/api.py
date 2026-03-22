@@ -43,21 +43,26 @@ async def get_session_messages_endpoint(user_id: str, session_id: str):
     """获取指定会话的所有消息"""
     try:
         messages = get_session_messages(user_id, session_id)
+        print(f"[get_session] user_id={user_id}, session_id={session_id}, messages_count={len(messages)}")
         result = []
-        for msg in messages:
-            msg_type = getattr(msg, "type", "unknown")
-            if msg_type == "human":
-                msg_type = "human"
-            elif msg_type == "ai":
-                msg_type = "ai"
-            result.append(MessageInfo(
-                type=msg_type,
-                content=msg.content if hasattr(msg, "content") else str(msg),
-                timestamp=msg.additional_kwargs.get("timestamp") if hasattr(msg, "additional_kwargs") else None,
-                rag_trace=None
-            ))
+        for i, msg in enumerate(messages):
+            try:
+                msg_type = getattr(msg, "type", "unknown")
+                if msg_type == "human":
+                    msg_type = "human"
+                elif msg_type == "ai":
+                    msg_type = "ai"
+                result.append(MessageInfo(
+                    type=msg_type,
+                    content=msg.content if hasattr(msg, "content") else str(msg),
+                    timestamp=msg.additional_kwargs.get("timestamp") if hasattr(msg, "additional_kwargs") else None,
+                    rag_trace=None
+                ))
+            except Exception as e:
+                print(f"[get_session] 处理第 {i} 条消息失败: {e}, msg={msg}")
         return SessionMessagesResponse(messages=result)
     except Exception as e:
+        print(f"[get_session] 错误: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

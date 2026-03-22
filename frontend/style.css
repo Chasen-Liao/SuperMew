@@ -1089,3 +1089,59 @@ textarea {
     background-color: #ee5a5a !important;
     transform: scale(1.1) !important;
 }
+
+/* RAG 步骤持久化显示（回答生成后仍可查看） */
+.rag-steps-collapsible {
+    margin-top: 8px;
+    padding: 0 4px;
+}
+
+.rag-steps-details {
+    background: var(--bot-msg-bg, #f0f8ff);
+    border-radius: 12px;
+    padding: 8px 12px;
+    font-size: 0.85rem;
+}
+
+.rag-steps-summary {
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--text-color, #6d6875);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+}
+
+.rag-steps-summary:hover {
+    color: var(--primary-color, #ff9e99);
+}
+
+.rag-steps-list {
+    margin-top: 8px;
+    padding-left: 4px;
+}
+
+.rag-step-line {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 4px;
+    font-size: 0.82rem;
+}
+
+.rag-step-icon {
+    flex-shrink: 0;
+    font-size: 0.78rem;
+}
+
+.rag-step-label {
+    color: var(--text-color, #6d6875);
+    font-weight: 500;
+}
+
+.rag-step-detail {
+    color: var(--text-light, #a5a5a5);
+    font-size: 0.8rem;
+    margin-left: 4px;
+}

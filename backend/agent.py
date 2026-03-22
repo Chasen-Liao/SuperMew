@@ -1,13 +1,16 @@
 import os
 import json
 import asyncio
+import queue
+import threading
 from pathlib import Path
 from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
+from middleware import memory_summary_middleware, extract_and_save_user_memory_async, load_user_memory_for_prompt
 from langchain_core.messages import AIMessageChunk
 from langgraph.checkpoint.postgres import PostgresSaver
-from langgraph.store.memory import InMemoryStore
+from langgraph.store.postgres import PostgresStore
 from tools import get_current_weather, search_knowledge_base, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
 from datetime import datetime
 from config import API_KEY, MODEL, BASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
@@ -29,8 +32,12 @@ def create_checkpointer():
 
 checkpointer = create_checkpointer()
 
-# 创建 Store（长期记忆）
-store = InMemoryStore()
+# 创建 Store（长期记忆，持久化到 PostgreSQL）
+_store = PostgresStore.from_conn_string(
+    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+)
+store = _store.__enter__()
+store.setup()
 
 class ConversationStorage:
     """会话列表存储（仅管理会话元数据，不存储消息）
@@ -98,6 +105,19 @@ class ConversationStorage:
 
 
 
+# 全局读取 soul.md
+_soul_prompt = Path(__file__).parent / "soul" / "soul.md"
+_SOUL_PROMPT = _soul_prompt.read_text(encoding="utf-8")
+
+
+def build_system_message() -> str:
+    """构建完整的系统提示词（soul.md + 用户记忆）"""
+    memory = load_user_memory_for_prompt()
+    if memory:
+        return f"{_SOUL_PROMPT}\n\n{memory}"
+    return _SOUL_PROMPT
+
+
 def create_agent_instance():
     model = init_chat_model(
         model=MODEL,
@@ -116,23 +136,19 @@ def create_agent_instance():
         base_url=BASE_URL,
     )
 
-    # 读取 soul.md 作为系统提示词
-    # 这样可以方便用户修改，和后续记忆添加和改进
-    soul_prompt_path = Path(__file__).parent / "soul" / "soul.md"
-    system_prompt = soul_prompt_path.read_text(encoding="utf-8")
-
+    # 不传 system_prompt，改为每次调用时手动 prepend
     agent = create_agent(
         model=model,
         tools=[get_current_weather, search_knowledge_base],
-        system_prompt=system_prompt,
         checkpointer=checkpointer,
         store=store,
         middleware=[
             SummarizationMiddleware(
                 model=summary_model,
                 trigger=("tokens", 80000),
-                keep=("messages", 12),  # 6 轮交互 = 12 条消息
+                keep=("messages", 12),
             ),
+            memory_summary_middleware,
         ],
     )
     return agent, model
@@ -155,8 +171,17 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     get_last_rag_context(clear=True)
     reset_tool_call_guards()
 
+    # 提取用户信息并保存到 Store（后台异步执行）
+    extract_and_save_user_memory_async(user_text)
+
+    # 构建完整的系统提示词（soul.md + 用户记忆），拼接到用户消息前
+    from langchain_core.messages import HumanMessage
+    system_content = build_system_message()
+    combined_message = f"{system_content}\n\n用户问题：{user_text}"
+    messages = [HumanMessage(content=combined_message)]
+
     result = agent.invoke(
-        {"messages": [{"role": "user", "content": user_text}]},
+        {"messages": messages},
         config=config,
     )
 
@@ -185,14 +210,17 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
 
 def get_session_messages(user_id: str, session_id: str) -> list:
     """从 checkpointer 获取会话消息"""
-    config = {"configurable": {"thread_id": f"{user_id}_{session_id}"}}
-    checkpoint = checkpointer.get(config)
-    if checkpoint is None:
+    try:
+        config = {"configurable": {"thread_id": f"{user_id}_{session_id}"}}
+        checkpoint = checkpointer.get(config)
+        if checkpoint is None:
+            return []
+        channel_values = checkpoint.get("channel_values", {})
+        messages = channel_values.get("messages", [])
+        return messages
+    except Exception as e:
+        print(f"[get_session_messages] 错误: {e}")
         return []
-    # checkpointer 返回格式: {"channel_values": {"messages": [...]}}
-    channel_values = checkpoint.get("channel_values", {})
-    messages = channel_values.get("messages", [])
-    return messages
 
 
 def delete_session_from_checkpointer(user_id: str, session_id: str):
@@ -204,8 +232,7 @@ def delete_session_from_checkpointer(user_id: str, session_id: str):
 async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
     """使用 Agent 处理用户消息并流式返回响应。
 
-    架构：使用统一输出队列 + 后台任务，确保 RAG 检索步骤在工具执行期间实时推送，
-    而非等待工具完成后才显示。
+    架构：使用线程安全的 queue.Queue 传递 RAG 步骤和 LLM 内容。
     """
     # 使用 thread_id 标识会话，checkpointer 自动管理会话历史
     config = {"configurable": {"thread_id": f"{user_id}_{session_id}"}, "recursion_limit": 8}
@@ -217,68 +244,88 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
     get_last_rag_context(clear=True)
     reset_tool_call_guards()
 
-    # 统一输出队列：所有事件（content / rag_step）都汇入这里
-    output_queue = asyncio.Queue()
+    # 提取用户信息并保存到 Store（后台异步执行，不阻塞）
+    extract_and_save_user_memory_async(user_text)
+
+    # 统一输出队列：使用线程安全的 queue.Queue
+    output_queue = queue.Queue()
 
     class _RagStepProxy:
         """代理对象：将 emit_rag_step 的原始 step dict 包装后放入统一输出队列。"""
         def put_nowait(self, step):
-            output_queue.put_nowait({"type": "rag_step", "step": step})
+            output_queue.put({"type": "rag_step", "step": step})
 
     set_rag_step_queue(_RagStepProxy())
 
     full_response = ""
 
-    async def _agent_worker():
-        """后台任务：运行 agent 并将内容 chunk 推入输出队列。"""
+    def _agent_sync_stream():
+        """同步运行 agent.stream() 并将 chunk 推入队列。"""
         nonlocal full_response
         try:
-            # 使用同步 stream 方法配合 asyncio.to_thread
-            for chunk in agent.stream(
-                {"messages": [{"role": "user", "content": user_text}]},
-                config=config,
-            ):
-                # chunk 格式: {'model': {'messages': [AIMessage, ...]}}
-                if isinstance(chunk, dict) and "model" in chunk:
-                    model_data = chunk["model"]
-                    if isinstance(model_data, dict) and "messages" in model_data:
-                        messages = model_data["messages"]
-                        if messages and hasattr(messages[-1], "content"):
-                            content = messages[-1].content
-                            if content:
-                                full_response += content
-                                await output_queue.put({"type": "content", "content": content})
-        except Exception as e:
-            await output_queue.put({"type": "error", "content": str(e)})
-        finally:
-            # 哨兵：通知主循环 agent 已完成
-            await output_queue.put(None)
+            from langchain_core.messages import HumanMessage, SystemMessage
 
-    # 启动后台任务
-    agent_task = asyncio.create_task(_agent_worker())
+            # 构建完整的系统提示词（soul.md + 用户记忆），确保 SystemMessage 在最前面
+            system_content = build_system_message()
+            # 将系统提示词作为前缀文本拼接到用户消息中
+            # 避免 SystemMessage 与 agent 内部处理冲突
+            combined_message = f"{system_content}\n\n用户问题：{user_text}"
+            messages = [HumanMessage(content=combined_message)]
+
+            for mode, data in agent.stream(
+                {"messages": messages},
+                config=config,
+                stream_mode=["messages", "updates"],
+            ):
+                if mode == "messages":
+                    msg, metadata = data
+                    if not isinstance(msg, AIMessageChunk):
+                        continue
+                    if getattr(msg, "tool_call_chunks", None):
+                        continue
+
+                    content = ""
+                    if isinstance(msg.content, str):
+                        content = msg.content
+                    elif isinstance(msg.content, list):
+                        for block in msg.content:
+                            if isinstance(block, str):
+                                content += block
+                            elif isinstance(block, dict) and block.get("type") == "text":
+                                content += block.get("text", "")
+
+                    if content:
+                        full_response += content
+                        output_queue.put({"type": "content", "content": content})
+        except Exception as e:
+            import traceback
+            error_msg = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+            output_queue.put({"type": "error", "content": error_msg})
+        finally:
+            output_queue.put(None)
+
+    # 启动后台线程运行 agent
+    agent_thread = threading.Thread(target=_agent_sync_stream, daemon=True)
+    agent_thread.start()
 
     try:
-        # 主循环：持续从统一队列取事件并 yield SSE
-        # RAG 步骤在工具执行期间通过 call_soon_threadsafe 实时入队，不需要等 agent 产出 chunk
+        # 主循环：从队列读取事件并 yield SSE
         while True:
-            event = await output_queue.get()
+            try:
+                event = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: output_queue.get(timeout=1.0)
+                )
+            except Exception:
+                # queue.get 超时会抛出 queue.Empty，表示 1 秒内没有事件
+                # 继续循环，等待下一个事件
+                continue
+
             if event is None:
                 break
             yield f"data: {json.dumps(event)}\n\n"
-    except GeneratorExit:
-        # 客户端断开连接（AbortController）时，FastAPI 会向此生成器抛出 GeneratorExit
-        # 我们必须在此处取消后台任务
-        agent_task.cancel()
-        try:
-            await agent_task
-        except asyncio.CancelledError:
-            pass  # 任务已成功取消
-        raise  # 重新抛出 GeneratorExit 以便 FastAPI 正确处理关闭
     finally:
-        # 正常结束或异常退出时清理
         set_rag_step_queue(None)
-        if not agent_task.done():
-             agent_task.cancel()
+        agent_thread.join(timeout=2.0)
 
     # 获取 RAG trace
     rag_context = get_last_rag_context(clear=True)
