@@ -1,5 +1,7 @@
 # SuperMew 项目说明
 
+> 本项目是 Chasen 学习和改进原始项目的实验场，主要用于探索 LangChain Agent、LangGraph RAG 等前沿技术的最佳实践。
+
 Agent的项目记录，方便后续持续更新与展示。
 
 ## 本地部署
