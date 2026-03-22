@@ -434,7 +434,7 @@ StreamingResponse(
 #### 1) ReadableStream 解析 (`script.js`)
 
 - 使用 `response.body.getReader()` + `TextDecoder` 逐块读取。
-- 手动按 `\n\n` 分割 SSE 事件，解析 `data: `     前缀后的 JSON。
+- 手动按 `\n\n` 分割 SSE 事件，解析 `data: `      前缀后的 JSON。
 - `content` 事件追加到消息文本；`rag_step` 事件追加到检索步骤数组并同步更新思考状态文字。
 
 #### 2) 思考气泡
