@@ -141,10 +141,10 @@ flowchart TD
 
 | 文件 | 变更内容 |
 |------|---------|
-| `backend/memory_vector_store.py` | **新增**：Milvus 向量存储操作（检索、重建、双 collection 管理） |
+| `backend/memory_vector_store.py` | **新增**：Milvus 向量存储操作（检索、清空、插入） |
 | `backend/agent.py` | 修改 `build_system_message()`：从向量库检索记忆，失败时降级回拼 PostgresStore |
-| `backend/tasks.py` | **新增**：定时重建任务（每天凌晨 3 点） |
-| `backend/config.py` | 新增配置项：向量库连接、collection 名、重建策略 |
+| `backend/memory_tasks.py` | **新增**：定时重建任务（每天凌晨 3 点） |
+| `backend/config.py` | 新增配置项：collection 名、检索参数、重建时间 |
 | `backend/api.py` | 新增手动重建 API 接口 |
 
 ### 5.1 API 接口设计
