@@ -47,8 +47,10 @@
 
 | 类型 | 存放位置 | 向量化方式 | 更新策略 |
 |------|---------|-----------|---------|
-| **用户画像** | PostgresStore (`user_memory/profile`) | 格式化文本 → Jina embedding | PostgresStore 更新后触发重建 |
-| **对话摘要** | PostgresStore (`memory/{thread_id}/summary_*`) | 摘要全文 → Jina embedding | 每 25 轮自动生成，定期全量重建 |
+| **用户画像** | PostgresStore (`user_memory/profile`) | 格式化文本 → Jina embedding | 定时全量重建 |
+| **对话摘要** | PostgresStore (`memory/{thread_id}/summary_*`) | 摘要全文 → Jina embedding | 每 25 轮自动生成，定时全量重建 |
+
+> 注：本阶段不实现"画像更新后主动触发重建"，仅通过定时 + 手动触发。
 
 **文本格式化示例（用户画像）**：
 ```
@@ -88,8 +90,8 @@ Collection 名称：`user_memory`
 ```
 1. 用户消息输入
 2. 用 Jina embedding 生成查询向量
-3. Milvus user_memory collection 检索，Top-K=5
-4. 按相关性得分排序，取 Top-3（避免过多记忆膨胀）
+3. Milvus user_memory collection 检索，Top-K=5（候选召回）
+4. 按相关性得分排序，取 Top-3（最终使用，避免过多记忆膨胀）
 5. 合并文本，设置 token 上限（500 tokens）
 6. 拼入系统提示词：soul.md + 召回记忆 + 用户消息
 7. 发送给 LLM
@@ -111,16 +113,17 @@ Collection 名称：`user_memory`
 |---------|------|
 | **定时触发** | 每天凌晨 3:00 自动执行 |
 | **手动触发** | 提供 API 接口，支持即时重建 |
-| **用户画像更新后** | 用户信息变化时主动触发（可选） |
 
-### 4.2 重建流程
+### 4.2 重建流程（双 Collection 交替）
+
+采用双 collection 交替策略，零停机重建：
 
 ```
-1. 清空 Milvus user_memory collection
-2. 从 PostgresStore 读取所有用户画像
-3. 格式化文本，批量向量化，插入 Milvus
-4. 从 PostgresStore 读取所有对话摘要
-5. 格式化文本，批量向量化，插入 Milvus
+1. 线程 A：创建新 collection `user_memory_v{timestamp}`
+2. 从 PostgresStore 读取所有用户画像和对话摘要
+3. 格式化文本，批量向量化，插入新 collection
+4. 切换指针，指向新 collection
+5. 旧 collection 保留 24 小时后删除（防指针遗漏）
 6. 记录重建时间戳
 ```
 
@@ -136,12 +139,30 @@ Collection 名称：`user_memory`
 
 | 文件 | 变更内容 |
 |------|---------|
-| `backend/memory_vector_store.py` | **新增**：Milvus 向量存储操作（写入、检索、清空、重建） |
-| `backend/middleware.py` | 修改 `UserMemoryManager`：画像更新后触发重建 |
-| `backend/agent.py` | 修改 `build_system_message()`：从向量库检索记忆 |
-| `backend/tasks.py` | **新增**：定时重建任务 |
+| `backend/memory_vector_store.py` | **新增**：Milvus 向量存储操作（检索、重建、双 collection 管理） |
+| `backend/agent.py` | 修改 `build_system_message()`：从向量库检索记忆，失败时降级回拼 PostgresStore |
+| `backend/tasks.py` | **新增**：定时重建任务（每天凌晨 3 点） |
 | `backend/config.py` | 新增配置项：向量库连接、collection 名、重建策略 |
-| `backend/api.py` | 新增重建 API 接口 |
+| `backend/api.py` | 新增手动重建 API 接口 |
+
+### 5.1 API 接口设计
+
+**重建记忆向量索引**
+
+```
+POST /api/memory/rebuild
+```
+
+| 项目 | 说明 |
+|------|------|
+| Method | POST |
+| Path | `/api/memory/rebuild` |
+| Auth | 需要管理员权限 |
+| Response 200 | `{"status": "ok", "rebuilt_count": 42, "duration_ms": 1234}` |
+| Response 400 | `{"error": "rebuild already in progress"}` |
+| Response 500 | `{"error": "rebuild failed", "detail": "..."}` |
+
+并发调用时返回 400，防止重复重建。
 
 ---
 
@@ -198,6 +219,6 @@ MEMORY_REBUILD_HOUR = 3  # 每天凌晨 3 点
 
 | 风险 | 应对 |
 |------|------|
-| Milvus 不可用 | 降级：回退到直接拼接 PostgresStore 记忆 |
-| 重建时服务中断 | 双 collection 交替：重建新 collection → 切换指针 → 删除旧 collection |
+| Milvus 不可用 | 降级：`build_system_message()` 捕获异常，回退到直接拼接 PostgresStore 记忆 |
+| 重建时服务中断 | 双 collection 交替策略，重建失败时保留旧 collection 不受影响 |
 | 记忆丢失（Milvus 数据丢失） | PostgresStore 是 source of truth，可随时重建 |
