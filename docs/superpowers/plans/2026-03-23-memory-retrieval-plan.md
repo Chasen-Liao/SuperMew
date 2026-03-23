@@ -466,19 +466,27 @@ class MemoryRebuildTask:
 
         ⚠️ LangGraph PostgresStore API 待验证。
         预期返回格式：[{"key": "summary_20260323", "value": {...}}, ...]
-        实际实现时需确认 search/scan 语法。
         """
         from langgraph.store.postgres import PostgresStore
         from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
 
         conn_string = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+        results = []
         with PostgresStore.from_conn_string(conn_string) as pg_store:
             pg_store.setup()
-            # TODO: 确认实际 API，可能需要用 pg_store.search 或 scan
-            # 示例（待验证）：
-            # for item in pg_store.search(["memory", ""], query="", limit=1000):
-            #     ...
-            pass
+            # LangGraph PostgresStore 的 namespace 是 tuple，如 ("memory", "thread_id")
+            # 遍历所有 thread_id 下的 summary_* key
+            # 实现时需要：
+            # 1. 列出所有 namespace：(pg_store.store._conn 或直接 SQL 查询)
+            # 2. 或者用 pg_store.search() 按 key 前缀搜索
+            # 3. 确认返回值结构（是否包含 key/value）
+            #
+            # 伪代码（待验证）：
+            # for ns in pg_store._list_namespaces():
+            #     if ns[0] == "memory":
+            #         for item in pg_store.search(ns, query="summary_", limit=100):
+            #             results.append({"key": item.key, "value": item.value})
+            return results
 
     def rebuild_index(self) -> dict:
         """执行全量重建索引，返回统计信息"""

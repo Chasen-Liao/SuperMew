@@ -2,8 +2,8 @@
 
 ## 版本信息
 
-- **文档版本**: v1.0
-- **生成日期**: 2026-03-20
+- **文档版本**: v2.0
+- **生成日期**: 2026-03-22
 - **项目版本**: 0.1.0
 
 ---
@@ -12,16 +12,18 @@
 
 ### 1.1 项目简介
 
-SuperMew 是一个基于 **FastAPI + LangChain + Milvus** 构建的智能客服助手系统，集成了先进的 **RAG (Retrieval-Augmented Generation)** 技术，支持混合向量检索、自动文档合并和流式对话输出。
+SuperMew 是一个基于 **FastAPI + LangChain + LangGraph + Milvus** 构建的智能客服助手系统，集成了先进的 **RAG (Retrieval-Augmented Generation)** 技术和 Agent 记忆管理系统，支持混合向量检索、自动文档合并、流式对话输出和用户记忆持久化。
 
 ### 1.2 核心能力
 
-- 💬 **智能对话**: 基于大语言模型的自然语言交互
-- 📚 **知识库检索**: 混合检索 (Dense + Sparse + RRF) + 重排序
-- 📄 **文档处理**: 支持 PDF/Word 文档的智能分块和向量化
-- 🔄 **Auto-merging**: 自动合并相关检索片段，提升上下文完整性
-- 🌊 **流式输出**: 实时流式响应，支持 RAG 步骤可视化追踪
-- 💾 **会话记忆**: 智能会话管理和上下文保持
+- 💬 **智能对话**: 基于大语言模型的自然语言交互（Qwen3.5-122B-A10B）
+- 📚 **知识库检索**: 混合检索 (Dense + Sparse + RRF) + Jina 重排序
+- 📄 **文档处理**: 支持 PDF/Word 文档的三级智能分块和向量化
+- 🔄 **Auto-merging**: 自动合并相关检索片段（L3→L2→L1），提升上下文完整性
+- 🌊 **流式输出**: 实时流式响应 (SSE)，支持 RAG 步骤可视化追踪
+- 💾 **会话记忆**: PostgresSaver checkpointer 持久化会话历史
+- 🧠 **用户记忆**: LLM 自动提取用户信息并持久化到 PostgreSQL Store
+- 🔍 **查询扩展**: Step-back Question + HyDE 假设性文档双重策略
 
 ---
 
@@ -34,6 +36,8 @@ SuperMew 是一个基于 **FastAPI + LangChain + Milvus** 构建的智能客服�
 | Web 框架 | FastAPI | ≥0.115.0 | REST API 服务 |
 | Agent 框架 | LangChain | ≥0.3 | Agent 构建和工具调用 |
 | 工作流引擎 | LangGraph | ≥0.2.31 | RAG 管道编排 |
+| 状态持久化 | langgraph-checkpoint-postgres | ≥0.1.0 | 会话状态持久化 |
+| 长期记忆 | langchain-postgres | ≥0.0.17 | 用户记忆存储 |
 | 向量数据库 | Milvus | 2.5+ | 混合向量存储和检索 |
 | 嵌入模型 | Qwen3-Embedding-4B | - | 稠密向量生成 |
 | 重排序模型 | Qwen3-Reranker-4B | - | 检索结果重排序 |
@@ -45,7 +49,7 @@ SuperMew 是一个基于 **FastAPI + LangChain + Milvus** 构建的智能客服�
 
 | 技术 | 用途 |
 |------|------|
-| Vue 3 | 前端框架 |
+| 原生 HTML/CSS/JS | 轻量级单页应用 |
 | Marked.js | Markdown 渲染 |
 | Highlight.js | 代码高亮 |
 | SSE | 服务器推送事件 (流式输出) |
@@ -54,9 +58,10 @@ SuperMew 是一个基于 **FastAPI + LangChain + Milvus** 构建的智能客服�
 
 | 组件 | 用途 |
 |------|------|
-| Docker Compose | Milvus 容器编排 |
+| Docker Compose | PostgreSQL + Milvus 容器编排 |
 | python-dotenv | 环境变量管理 |
 | uvicorn | ASGI 服务器 |
+| psycopg | PostgreSQL 驱动 |
 
 ---
 
@@ -66,16 +71,19 @@ SuperMew 是一个基于 **FastAPI + LangChain + Milvus** 构建的智能客服�
 
 ```mermaid
 flowchart TB
-    subgraph Frontend["前端层 (Vue 3 SPA)"]
-        UI[index.html + style.css]
-        App[script.js]
-        UI --> App
+    subgraph Frontend["前端层 (原生 HTML/JS SPA)"]
+        UI[index.html]
+        JS[script.js]
+        CSS[style.css]
+        UI --> JS
+        UI --> CSS
     end
 
     subgraph Backend["后端层 (FastAPI)"]
         APIRouter[api.py<br/>API 路由]
-        AgentCore[agent.py<br/>Agent 核心]
+        AgentCore[agent.py<br/>Agent 核心 + Checkpointer]
         Tools[tools.py<br/>工具集]
+        Middleware[middleware.py<br/>记忆中间件]
         RP[rag_pipeline.py<br/>RAG 工作流]
         RU[rag_utils.py<br/>检索工具]
     end
@@ -87,21 +95,23 @@ flowchart TB
     end
 
     subgraph Storage["存储层"]
-        Milvus[Milvus DB<br/>milvus_client.py]
-        ParentChunks[parent_chunks.json<br/>ParentChunkStore]
-        Sessions[customer_service_history.json<br/>ConversationStorage]
+        Milvus[(Milvus DB<br/>向量存储)]
+        PostgreSQL[(PostgreSQL<br/>会话+记忆)]
+        ParentChunks[parent_chunks.json<br/>父块存储]
+        SessionsJSON[customer_service_history.json<br/>会话列表]
     end
 
     Frontend --> |HTTP/SSE| APIRouter
     APIRouter --> AgentCore
     AgentCore --> Tools
+    AgentCore --> Middleware
+    Middleware --> PostgreSQL
     Tools --> RP
     RP --> RU
     RU --> Embedding
     RU --> Milvus
     RU --> Rerank
-    RP --> LLM
-    AgentCore --> Sessions
+    AgentCore --> PostgreSQL
     Milvus --> ParentChunks
 ```
 
@@ -172,13 +182,26 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    Query([用户查询]) --> DenseQ[稠密向量查询]
-    Query --> SparseQ[稀疏向量查询 BM25]
-    DenseQ -->|Top K×2| RRF[RRF 融合]
+    Query([用户查询]) --> DenseQ[稠密向量查询<br/>Qwen3-Embedding]
+    Query --> SparseQ[稀疏向量查询<br/>BM25]
+    DenseQ -->|Top K×2| RRF[RRF 融合<br/>k=60]
     SparseQ -->|Top K×2| RRF
-    RRF --> Rerank[重排序<br/>Reranker]
-    Rerank --> Merge[Auto-merging<br/>合并父子块]
+    RRF --> Rerank[重排序<br/>Qwen3-Reranker]
+    Rerank --> Merge[Auto-merging<br/>L3→L2→L1 合并]
     Merge --> Output([Top K 最终结果])
+```
+
+### 3.5 用户记忆系统架构
+
+```mermaid
+flowchart TB
+    UserMsg[用户消息] --> ShouldExtract{关键词检测}
+    ShouldExtract -->|Yes| Extract[LLM 提取<br/>UserInfo Pydantic Model]
+    ShouldExtract -->|No| Skip[跳过]
+    Extract --> Merge[合并模式保存<br/>PostgresStore]
+    Merge --> Profile[(用户画像<br/>PostgreSQL)]
+    Profile --> SystemPrompt[系统提示词拼接]
+    SystemPrompt --> Agent[Agent 处理]
 ```
 
 ---
@@ -202,7 +225,7 @@ flowchart TB
 | `/documents/upload` | POST | 上传文档 |
 | `/documents/{filename}` | DELETE | 删除文档 |
 
-**设计模式**: 
+**设计模式**:
 - RESTful API 设计
 - Pydantic 请求/响应模型验证
 - SSE (Server-Sent Events) 实现流式输出
@@ -214,26 +237,43 @@ flowchart TB
 **关键组件**:
 
 ```python
-class ConversationStorage:
-    """对话存储 - 持久化会话数据到 JSON"""
-    
-class SummarizationMiddleware:
-    """摘要中间件 - Token 超过 80000 时触发摘要"""
+# PostgresSaver Checkpointer - 会话状态持久化
+checkpointer = PostgresSaver(conn)
+checkpointer.setup()
+
+# PostgresStore - 长期记忆存储
+store = PostgresStore.from_conn_string(conn_string)
+store.setup()
+
+# ConversationStorage - 会话列表元数据管理
+storage = ConversationStorage()
 ```
 
 **Agent 配置**:
-- 模型: Qwen3.5-122B-A10B
+- 模型: Qwen/Qwen3.5-122B-A10B (SiliconFlow)
 - 工具: `get_current_weather`, `search_knowledge_base`
-- 系统提示: `backend/soul/soul.md`
-- 摘要触发: 80000 tokens
-- 保留消息: 最近 12 条 (6 轮交互)
+- 系统提示: `backend/soul/soul.md` + 用户记忆
+- 摘要中间件: Token 超过 80000 时触发摘要，保留最近 12 条消息
+- 记忆中间件: `memory_summary_middleware` - 周期性总结对话历史
 
 **对话流程**:
-1. 加载历史会话
-2. 清理残留 RAG 上下文
-3. 调用 Agent 处理消息
-4. 提取 RAG 追踪信息
-5. 保存对话到存储
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant API as api.py
+    participant Agent as agent.py
+    participant Middleware as middleware.py
+    participant Store as PostgresStore
+
+    User->>API: POST /chat
+    API->>Agent: chat_with_agent()
+    Agent->>Middleware: extract_and_save_user_memory_async()
+    Middleware->>Store: 保存用户信息
+    Agent->>Agent: build_system_message()
+    Agent->>Agent: 调用 Agent
+    Agent-->>API: 响应结果
+    API-->>User: ChatResponse
+```
 
 ### 4.3 RAG 管道 (`rag_pipeline.py`)
 
@@ -242,48 +282,59 @@ class SummarizationMiddleware:
 **状态定义** (`RAGState`):
 ```python
 class RAGState(TypedDict):
-    question: str          # 原始问题
-    query: str            # 检索查询
-    context: str          # 格式化上下文
-    docs: List[dict]      # 检索文档
-    route: Optional[str]  # 路由决策
-    expansion_type: Optional[str]  # 扩展策略
-    rag_trace: Optional[dict]     # 追踪信息
+    question: str              # 原始问题
+    query: str                 # 检索查询
+    context: str               # 格式化上下文
+    docs: List[dict]           # 检索文档
+    route: Optional[str]       # 路由决策
+    expansion_type: Optional[str]  # 扩展策略 (step_back/hyde/complex)
+    expanded_query: Optional[str]  # 扩展后查询
+    step_back_question: Optional[str]  # 退步问题
+    step_back_answer: Optional[str]   # 退步答案
+    hypothetical_doc: Optional[str]    # HyDE 假设文档
+    rag_trace: Optional[dict]         # 追踪信息
 ```
 
 **工作流节点**:
-1. `retrieve_initial`: 初始检索
-2. `grade_documents_node`: 文档相关性评估
-3. `rewrite_question_node`: 查询重写和扩展
-4. `retrieve_expanded`: 扩展检索
+1. `retrieve_initial`: 初始检索（L3 叶子层，top_k=5×3=15 候选）
+2. `grade_documents_node`: 文档相关性评估（Grader Model）
+3. `rewrite_question_node`: 查询重写和扩展（step_back/hyde/complex）
+4. `retrieve_expanded`: 使用扩展查询重新检索
 5. `generate_answer`: 答案生成
+
+**Grader Prompt**:
+```
+You are a grader assessing relevance of a retrieved document to a user question.
+If the document contains keyword(s) or semantic meaning related to the user question,
+grade it as relevant. Give a binary score 'yes' or 'no'.
+```
 
 ### 4.4 检索工具 (`rag_utils.py`)
 
 **职责**: 混合检索和文档处理
 
-**核心功能**:
-
 #### 4.4.1 混合检索 (`hybrid_retrieve`)
 ```python
 def hybrid_retrieve(query: str, top_k: int = 5) -> dict:
-    # 1. 生成稠密向量 + 稀疏向量
-    # 2. 并行执行两种检索
-    # 3. RRF 融合结果
-    # 4. 可选重排序
+    # 1. 生成稠密向量 (Qwen3-Embedding) + 稀疏向量 (BM25)
+    # 2. 并行执行两种检索 (AnnSearchRequest)
+    # 3. RRF 融合结果 (k=60)
+    # 4. 可选重排序 (Qwen3-Reranker)
     # 5. Auto-merging 合并父子块
 ```
 
 #### 4.4.2 Auto-merging 机制
 ```python
-def _merge_to_parent_level(docs, threshold=2):
-    # 将连续的 L3/L2 块合并到父级 L2/L1
-    # 提升上下文完整性
+def _auto_merge_documents(docs: List[dict], top_k: int) -> Tuple[List[dict], dict]:
+    # 两段自动合并：L3->L2，再 L2->L1
+    # threshold=2: 连续 2 个以上子块则合并到父块
+    merged_docs, steps = _merge_to_parent_level(docs, threshold=2)
 ```
 
-#### 4.4.3 重排序 (`_rerank_documents`)
-- 使用 Qwen3-Reranker 模型
-- 提升检索精度
+#### 4.4.3 查询扩展
+- **Step-back**: 生成退步问题，理解通用原理
+- **HyDE**: 生成假设性文档，用于检索
+- **Complex**: 同时使用 step_back + hyde
 
 ### 4.5 向量服务 (`embedding.py`)
 
@@ -293,12 +344,12 @@ def _merge_to_parent_level(docs, threshold=2):
 
 | 向量类型 | 维度 | 用途 | 算法 |
 |---------|------|------|------|
-| 稠密向量 | 2560 | 语义相似性 | Qwen3-Embedding-4B |
+| 稠密向量 | 2560 | 语义相似性 | Qwen3-Embedding-4B API |
 | 稀疏向量 | 动态 | 关键词匹配 | BM25 |
 
 **BM25 参数**:
 - `k1 = 1.5`: 词频饱和参数
-- `b = 0.75`: 文档长度归一化
+- `b = 0.75`: 文档长度归一化参数
 
 ### 4.6 Milvus 客户端 (`milvus_client.py`)
 
@@ -307,22 +358,29 @@ def _merge_to_parent_level(docs, threshold=2):
 **集合 Schema**:
 ```python
 {
-    "id": INT64,              # 主键 (auto_id)
-    "dense_embedding": FLOAT_VECTOR[2560],
-    "sparse_embedding": SPARSE_FLOAT_VECTOR,
-    "text": VARCHAR[2000],
-    "filename": VARCHAR[255],
-    "file_type": VARCHAR[50],
-    "chunk_id": VARCHAR[512],
-    "parent_chunk_id": VARCHAR[512],
-    "root_chunk_id": VARCHAR[512],
-    "chunk_level": INT64,     # 1/2/3
+    "id": INT64,                    # 主键 (auto_id)
+    "dense_embedding": FLOAT_VECTOR[2560],  # 稠密向量
+    "sparse_embedding": SPARSE_FLOAT_VECTOR,  # BM25 稀疏向量
+    "text": VARCHAR[2000],          # 原始文本
+    "filename": VARCHAR[255],      # 文件名
+    "file_type": VARCHAR[50],      # 文件类型
+    "page_number": INT64,           # 页码
+    "chunk_idx": INT64,            # 块索引
+    "chunk_id": VARCHAR[512],      # 块 ID (格式: filename::p{n}::l{level}::{idx})
+    "parent_chunk_id": VARCHAR[512],  # 父块 ID
+    "root_chunk_id": VARCHAR[512],   # 根块 ID
+    "chunk_level": INT64,           # 层级 (1/2/3)
 }
 ```
 
 **索引配置**:
-- Dense: HNSW (M=16, efConstruction=256)
-- Sparse: SPARSE_INVERTED_INDEX (drop_ratio_build=0.2)
+- Dense: HNSW (M=16, efConstruction=256, metric=IP)
+- Sparse: SPARSE_INVERTED_INDEX (drop_ratio_build=0.2, metric=IP)
+
+**混合检索参数**:
+- `ef=64`: 密集向量搜索参数
+- `drop_ratio_search=0.2`: 稀疏向量搜索参数
+- `rrf_k=60`: RRF 融合参数
 
 ### 4.7 文档加载器 (`document_loader.py`)
 
@@ -330,19 +388,20 @@ def _merge_to_parent_level(docs, threshold=2):
 
 **三级滑动窗口**:
 
-| 层级 | 块大小 | 重叠 | 数量比 |
-|------|--------|------|--------|
-| L1 父块 | 1200+ chars | 240+ chars | 1x |
-| L2 中块 | 600 chars | 120 chars | ~3x |
-| L3 叶子块 | 300 chars | 60 chars | ~10x |
+| 层级 | 块大小 | 重叠 | 存储位置 |
+|------|--------|------|----------|
+| L1 父块 | 1200+ chars | 240+ chars | parent_chunks.json |
+| L2 中块 | 600 chars | 120 chars | parent_chunks.json |
+| L3 叶子块 | 300 chars | 60 chars | Milvus DB |
 
-**分块标识**:
+**分块标识格式**:
 ```python
-chunk_id = "{filename}::p{page}::l{level}::{index}"
+chunk_id = "{filename}::p{page_number}::l{level}::{index}"
+# 示例: "document.pdf::p1::l3::5"
 ```
 
 **存储策略**:
-- L1/L2: 仅存储在 `parent_chunks.json`
+- L1/L2: 写入 `parent_chunks.json` (用于 Auto-merging 合并)
 - L3: 写入 Milvus (用于检索)
 
 ### 4.8 工具集 (`tools.py`)
@@ -356,11 +415,67 @@ chunk_id = "{filename}::p{page}::l{level}::{index}"
 
 **RAG 步骤推送机制**:
 ```python
-def emit_rag_step(icon, label, detail):
+def emit_rag_step(icon: str, label: str, detail: str):
     """跨线程安全地推送 RAG 步骤到 SSE 队列"""
+    # 使用 call_soon_threadsafe 确保线程安全
 ```
 
-### 4.9 前端 (`frontend/script.js`)
+**工具调用限制**:
+- 每轮对话最多调用 1 次 `search_knowledge_base`
+- 达到限制后返回提示信息，不再重复调用
+
+### 4.9 中间件 (`middleware.py`)
+
+**职责**: Agent 中间件和用户记忆管理
+
+#### 4.9.1 用户记忆管理系统
+
+```python
+class UserMemoryManager:
+    """使用 LLM 提取并存储到 PostgresStore"""
+
+    def extract_from_text(self, text: str) -> Optional[UserInfo]:
+        """从用户消息中提取结构化信息"""
+
+    def save_user_info(self, user_info: UserInfo) -> bool:
+        """保存用户信息（合并模式，保留已有值）"""
+
+    def load_user_info(self) -> dict:
+        """从 Store 加载用户信息"""
+
+    def format_for_system_prompt(self) -> str:
+        """格式化用户信息为系统提示词字符串"""
+```
+
+**提取字段**:
+- `name`: 名字/昵称
+- `school`: 学校或公司
+- `major`: 专业或工作领域
+- `grade`: 年级
+- `identity`: 身份（学生/工程师等）
+- `relationship`: 重要关系及对方名字
+- `interest`: 兴趣爱好
+- `location`: 所在地
+- `other`: 其他重要信息
+
+**关键词触发检测**:
+```python
+def should_extract_memory(text: str) -> bool:
+    # 检测是否包含至少 2 个关键词
+    keywords = ['我叫', '学校', '专业', '学生', '女朋友', '男朋友', '喜欢', ...]
+```
+
+#### 4.9.2 记忆总结中间件
+
+```python
+class MemorySummaryMiddleware(AgentMiddleware):
+    """每隔指定轮次对对话历史进行总结"""
+
+    # 每 25 轮触发一次总结
+    # 总结存入 PostgresStore 作为长期记忆
+```
+
+### 4.10 前端 (`frontend/`)
 
 **职责**: 用户界面和交互逻辑
 
@@ -376,12 +491,16 @@ def emit_rag_step(icon, label, detail):
    ```
 
 2. **会话管理**
-   - 用户/会话 ID 生成和持久化
+   - 用户/会话 ID 生成和持久化 (localStorage)
    - 历史消息加载和展示
 
 3. **Markdown 渲染**
    - Marked.js 解析
    - Highlight.js 代码高亮
+
+4. **文档管理**
+   - PDF/Word 文件上传
+   - 上传进度显示
 
 ---
 
@@ -392,30 +511,35 @@ def emit_rag_step(icon, label, detail):
 ```mermaid
 sequenceDiagram
     participant User as 用户
-    participant FE as 前端 (Vue)
+    participant FE as 前端
     participant API as api.py
     participant Agent as agent.py
+    participant Middleware as middleware.py
     participant Tool as tools.py
     participant RAG as rag_pipeline.py
     participant Milvus as Milvus DB
     participant LLM as LLM API
+    participant PG as PostgreSQL
 
     User->>FE: 输入问题
     FE->>API: POST /chat/stream
     API->>Agent: chat_with_agent_stream()
+    Agent->>Middleware: extract_and_save_user_memory_async()
+    Middleware->>PG: 保存用户记忆
+    Agent->>Agent: build_system_message()
     Agent->>LLM: 模型推理
     LLM-->>Agent: 需要调用知识库
     Agent->>Tool: search_knowledge_base()
     Tool->>RAG: run_rag_graph()
-    RAG->>RAG: 1. 初始检索
-    RAG->>RAG: 2. 相关性评估
+    RAG->>RAG: 1. 初始检索 (hybrid_retrieve)
+    RAG->>RAG: 2. 相关性评估 (grade_documents)
     alt 相关性不足
         RAG->>RAG: 3. 查询重写 (step_back/hyde)
         RAG->>RAG: 4. 扩展检索
     end
     RAG->>Milvus: hybrid_retrieve()
     Milvus-->>RAG: Top K 结果
-    RAG->>RAG: Auto-merging
+    RAG->>RAG: Auto-merging 合并
     RAG-->>Tool: 检索结果 + rag_trace
     Tool-->>Agent: 格式化上下文
     Agent->>LLM: 生成最终答案
@@ -434,11 +558,13 @@ flowchart TB
     Detect -->|Word| DocxLoader[Docx2txtLoader]
     PDFLoader --> ThreeLevel[三级分块]
     DocxLoader --> ThreeLevel
-    ThreeLevel --> Vectorize[向量化]
-    Vectorize -->|L3| Milvus[(Milvus DB)]
-    Vectorize -->|L1/L2| ParentJSON[(parent_chunks.json)]
-    Milvus --> Done[处理完成]
-    ParentJSON --> Done
+    ThreeLevel --> Split[拆分 L1/L2/L3]
+    Split -->|L1/L2| ParentJSON[(parent_chunks.json)]
+    Split -->|L3| Vectorize[向量化]
+    Vectorize -->|Dense| Milvus[(Milvus DB)]
+    Vectorize -->|Sparse| Milvus
+    ParentJSON --> Done[处理完成]
+    Milvus --> Done
 ```
 
 ---
@@ -531,6 +657,18 @@ data: [DONE]
 }
 ```
 
+#### DELETE `/sessions/{user_id}/{session_id}`
+
+删除指定会话
+
+**响应**:
+```json
+{
+    "session_id": "session_1",
+    "message": "成功删除会话"
+}
+```
+
 ### 6.3 文档管理
 
 #### POST `/documents/upload`
@@ -545,7 +683,7 @@ data: [DONE]
 {
     "filename": "document.pdf",
     "chunks_processed": 150,
-    "message": "文档上传成功"
+    "message": "成功上传并处理 document.pdf，叶子分块 150 个，父级分块 45 个"
 }
 ```
 
@@ -563,6 +701,19 @@ data: [DONE]
             "chunk_count": 150
         }
     ]
+}
+```
+
+#### DELETE `/documents/{filename}`
+
+删除文档
+
+**响应**:
+```json
+{
+    "filename": "document.pdf",
+    "chunks_deleted": 150,
+    "message": "成功删除文档 document.pdf 的向量数据"
 }
 ```
 
@@ -600,6 +751,13 @@ AMAP_API_KEY=your_amap_key
 # ===== 服务器 =====
 HOST=127.0.0.1
 PORT=8000
+
+# ===== PostgreSQL (checkpointer) =====
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5433
+POSTGRES_USER=supermew
+POSTGRES_PASSWORD=supermew123
+POSTGRES_DB=supermew
 ```
 
 ---
@@ -612,7 +770,7 @@ PORT=8000
 # 1. 安装依赖
 uv sync
 
-# 2. 启动 Milvus
+# 2. 启动 PostgreSQL + Milvus
 docker compose up -d
 
 # 3. 启动后端
@@ -628,43 +786,52 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 ```yaml
 # docker-compose.yml
 services:
-  milvus-etcd:
-    image: quay.io/coreos/etcd:v3.5.5
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: supermew
+      POSTGRES_USER: supermew
+      POSTGRES_PASSWORD: supermew123
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
     volumes:
       - ./volumes/etcd:/etcd
-    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
 
-  milvus-minio:
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
     environment:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
     ports:
       - "9001:9001"
       - "9000:9000"
-    volumes:
-      - ./volumes/minio:/minio_data
-    command: minio server /minio_data --console-address ":9001"
 
-  milvus-standalone:
-    image: milvusdb/milvus:v2.5.0
-    command: ["milvus", "run", "standalone"]
+  standalone:
+    image: milvusdb/milvus:v2.5.14
     environment:
-      ETCD_ENDPOINTS: milvus-etcd:2379
-      MINIO_ADDRESS: milvus-minio:9000
-    volumes:
-      - ./volumes/milvus:/var/lib/milvus
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
     ports:
       - "19530:19530"
       - "9091:9091"
     depends_on:
-      - milvus-etcd
-      - milvus-minio
+      - etcd
+
+  attu:
+    image: zilliz/attu:v2.5.11
+    environment:
+      MILVUS_URL: standalone:19530
+      PORT: 3000
+    ports:
+      - "8080:3000"
 ```
 
 ---
@@ -681,6 +848,7 @@ SuperMew/
 │   ├── config.py                # 配置管理
 │   ├── schemas.py               # Pydantic 数据模型
 │   ├── tools.py                 # Agent 工具集
+│   ├── middleware.py             # 记忆中间件和用户记忆管理
 │   ├── soul/
 │   │   └── soul.md              # Agent 系统提示词
 │   ├── rag_pipeline.py          # LangGraph RAG 工作流
@@ -689,165 +857,70 @@ SuperMew/
 │   ├── milvus_client.py         # Milvus 客户端
 │   ├── milvus_writer.py         # 向量写入器
 │   ├── document_loader.py       # 文档解析和分块
-│   └── parent_chunk_store.py     # 父级分块存储
-├── frontend/                    # Vue 3 单页应用
+│   ├── parent_chunk_store.py     # 父级分块存储
+│   └── migrate_to_checkpointer.py # 旧数据迁移脚本
+├── frontend/                    # 原生 HTML/JS SPA
 │   ├── index.html
 │   ├── script.js
 │   └── style.css
 ├── data/                       # 本地数据存储
-│   ├── customer_service_history.json  # 会话历史
-│   ├── parent_chunks.json              # 父级分块
-│   └── documents/                      # 上传文档
-├── langchain-study/            # LangChain 学习笔记
-├── docker-compose.yml          # Milvus 部署配置
-├── pyproject.toml             # 项目依赖
-├── CLAUDE.md                  # Claude Code 指南
-└── sys-doc.md                 # 本文档
+│   ├── documents/              # 上传的文档
+│   ├── parent_chunks.json      # 父级分块
+│   └── customer_service_history.json  # 会话列表
+├── docker-compose.yml          # PostgreSQL + Milvus + Attu
+├── pyproject.toml              # Python 依赖
+└── CLAUDE.md                   # 项目指南
 ```
 
 ---
 
-## 10. 关键技术亮点
+## 10. 安全考虑
 
-### 10.1 三级分块 + Auto-merging
+### 10.1 API 安全
+- CORS 配置允许所有来源（生产环境应限制）
+- 请求参数验证（Pydantic 模型）
 
-传统的固定大小分块会导致语义截断。本项目采用三级滑动窗口：
+### 10.2 数据安全
+- PostgreSQL 密码硬编码在配置中（生产环境应使用环境变量或密钥管理）
+- 文件上传仅支持 PDF 和 Word 格式
 
-1. **L1 父块** (1200+ chars): 提供宏观上下文
-2. **L2 中块** (600 chars): 平衡粒度和语义
-3. **L3 叶子块** (300 chars): 精确检索单元
-
-Auto-merging 机制在检索后自动合并相关片段，保留完整语义。
-
-### 10.2 混合检索 + RRF 融合
-
-结合两种检索范式：
-
-- **稠密向量**: 捕获语义相似性
-- **稀疏向量 (BM25)**: 精确关键词匹配
-
-使用 **Reciprocal Rank Fusion (RRF)** 融合两种结果：
-
-```
-RRF_score(d) = Σ 1/(k + rank_i(d))
-```
-
-其中 `k=60` 为平滑参数。
-
-### 10.3 查询扩展策略
-
-针对不同问题类型采用不同策略：
-
-| 策略 | 适用场景 | 方法 |
-|------|----------|------|
-| Step-back | 具体问题 | 生成高层抽象问题 |
-| HyDE | 概念问题 | 生成假设性答案文档 |
-| Complex | 复杂问题 | 结合两种策略 |
-
-### 10.4 流式输出 + RAG 追踪
-
-使用 SSE 实现实时流式响应，同时推送：
-
-- 文本片段 (`content`)
-- RAG 步骤 (`rag_step`)
-- 最终追踪 (`trace`)
-
-提供透明可追溯的推理过程。
-
-### 10.5 智能会话管理
-
-- **Token 限制**: 80000 tokens 触发摘要
-- **消息保留**: 最近 12 条消息 (6 轮交互)
-- **持久化**: JSON 文件存储
+### 10.3 错误处理
+- 429 限流错误特殊处理
+- 401/403 认证错误透传
+- 通用 500 错误返回
 
 ---
 
-## 11. 性能优化建议
+## 11. 性能优化
 
-### 11.1 当前配置
+### 11.1 向量检索
+- HNSW 索引加速密集向量检索
+- 稀疏向量使用倒排索引
+- RRF 融合时多取 2 倍结果保证召回
 
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| RRF k | 60 | 融合平滑参数 |
-| HNSW M | 16 | 邻居数 |
-| HNSW efConstruction | 256 | 建设参数 |
-| BM25 k1 | 1.5 | 词频饱和 |
-| BM25 b | 0.75 | 长度归一化 |
-| Auto-merge threshold | 2 | 合并阈值 |
+### 11.2 文档处理
+- 批量写入 Milvus（batch_size=50）
+- 异步保存用户记忆（后台线程）
 
-### 11.2 优化方向
-
-1. **向量索引**: 调整 HNSW 参数平衡精度和速度
-2. **缓存层**: 引入 Redis 缓存热门查询结果
-3. **异步处理**: 文档上传使用后台任务
-4. **批量检索**: 合并高频查询
+### 11.3 中间件优化
+- 摘要模型复用（单例模式）
+- LLM 提取模型复用
+- 关键词快速预检减少不必要的 LLM 调用
 
 ---
 
-## 12. 维护指南
+## 12. 故障排查
 
-### 12.1 日志监控
-
-关键监控指标：
-
-- API 响应时间
-- Milvus 查询延迟
-- Token 使用量
-- RAG 命中率
-
-### 12.2 数据备份
-
-定期备份：
-
-- `data/customer_service_history.json`
-- `data/parent_chunks.json`
-- Milvus 集合数据
-
-### 12.3 常见问题
+### 12.1 常见问题
 
 | 问题 | 可能原因 | 解决方案 |
-|------|----------|---------|
-| 检索无结果 | Milvus 未启动 | 检查 `docker compose ps` |
-| API 429 错误 | 模型限流 | 检查账号额度 |
-| 文档上传失败 | 格式不支持 | 仅支持 PDF/Word |
+|------|---------|---------|
+| 检索结果为空 | Milvus 集合未初始化 | 调用 `milvus_manager.init_collection()` |
+| 会话历史丢失 | PostgreSQL 连接失败 | 检查 POSTGRES_* 配置 |
+| 文档上传失败 | 文件类型不支持 | 仅支持 .pdf, .docx, .doc |
+| 流式响应中断 | 网络超时 | 检查 LLM API 可用性 |
 
----
-
-## 13. 扩展指南
-
-### 13.1 添加新工具
-
-在 `tools.py` 中定义工具函数：
-
-```python
-@tool("tool_name")
-def new_tool(param: str) -> str:
-    """工具描述"""
-    # 实现逻辑
-    return result
-```
-
-### 13.2 自定义 RAG 节点
-
-在 `rag_pipeline.py` 中添加节点：
-
-```python
-def custom_node(state: RAGState) -> RAGState:
-    # 自定义逻辑
-    return {"key": value}
-
-# 添加到图
-graph.add_node("custom", custom_node)
-```
-
-### 13.3 集成新数据源
-
-参考现有实现添加数据源适配器：
-
-1. 创建数据加载器
-2. 实现向量化接口
-3. 配置 Milvus Schema
-
----
-
-*文档生成完毕 - SuperMew v0.1.0*
+### 12.2 调试日志
+- Agent 调用日志：`[get_session]`, `[UserMemory]`
+- RAG 管道步骤：`emit_rag_step()` 输出
+- 中间件状态：`memory_summary_middleware` 日志

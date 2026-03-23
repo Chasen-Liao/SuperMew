@@ -254,7 +254,9 @@ createApp({
                 this.messages = data.messages.map(msg => ({
                     text: msg.content,
                     isUser: msg.type === 'human',
-                    ragTrace: msg.rag_trace || null
+                    ragTrace: msg.rag_trace || null,
+                    ragSteps: [],
+                    isThinking: false
                 }));
                 
                 this.$nextTick(() => {

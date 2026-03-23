@@ -19,23 +19,24 @@
 
 ### 1.1 数据架构
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         数据写入侧                                │
-│                                                                 │
-│  ┌──────────────────────┐       定时全量重建       ┌───────────┐ │
-│  │   PostgresStore      │ ───────────────────────▶  │  Milvus   │ │
-│  │   (Source of Truth)  │       (每天凌晨)         │ user_memory│ │
-│  │   - 用户画像          │                          │ collection │ │
-│  │   - 对话摘要          │                          └───────────┘ │
-│  └──────────────────────┘                                     │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph 写入侧["数据写入侧"]
+        direction TB
+        P[("PostgresStore<br/>Source of Truth")]
+        P --> |定时全量重建<br/>每天凌晨| M[("Milvus<br/>user_memory")]
+        P -.-> |用户画像| note1["user_memory/profile"]
+        P -.-> |对话摘要| note2["memory/{thread_id}/summary_*"]
+    end
 
-┌─────────────────────────────────────────────────────────────────┐
-│                         数据读取侧                                │
-│                                                                 │
-│  用户消息 ──Jina Embedding──▶ Milvus 检索 ──▶ Top-5 召回 ──▶ 拼入提示词 │
-└─────────────────────────────────────────────────────────────────┘
+    subgraph 读取侧["数据读取侧"]
+        direction LR
+        U[用户消息] --> E[Jina Embedding]
+        E --> MS[Milvus 检索]
+        MS --> T5[Top-5 召回]
+        T5 --> T3[Top-3 取舍]
+        T3 --> P3[拼入提示词]
+    end
 ```
 
 **关键决策**：
@@ -87,14 +88,14 @@ Collection 名称：`user_memory`
 
 ### 3.1 每次对话的检索步骤
 
-```
-1. 用户消息输入
-2. 用 Jina embedding 生成查询向量
-3. Milvus user_memory collection 检索，Top-K=5（候选召回）
-4. 按相关性得分排序，取 Top-3（最终使用，避免过多记忆膨胀）
-5. 合并文本，设置 token 上限（500 tokens）
-6. 拼入系统提示词：soul.md + 召回记忆 + 用户消息
-7. 发送给 LLM
+```mermaid
+flowchart LR
+    A["1. 用户消息输入"] --> B["2. Jina Embedding<br/>生成查询向量"]
+    B --> C["3. Milvus 检索<br/>Top-K=5 候选召回"]
+    C --> D["4. 排序取 Top-3"]
+    D --> E["5. Token 限流<br/>≤500 tokens"]
+    E --> F["6. 拼入提示词<br/>soul.md + 记忆 + 用户消息"]
+    F --> G["7. 发送给 LLM"]
 ```
 
 ### 3.2 Token 上限控制
@@ -114,24 +115,25 @@ Collection 名称：`user_memory`
 | **定时触发** | 每天凌晨 3:00 自动执行 |
 | **手动触发** | 提供 API 接口，支持即时重建 |
 
-### 4.2 重建流程（双 Collection 交替）
+### 4.2 重建流程（In-Place 清空重建）
 
-采用双 collection 交替策略，零停机重建：
+采用单 collection 原地清空重建，实现简单，适合 MVP：
 
-```
-1. 线程 A：创建新 collection `user_memory_v{timestamp}`
-2. 从 PostgresStore 读取所有用户画像和对话摘要
-3. 格式化文本，批量向量化，插入新 collection
-4. 切换指针，指向新 collection
-5. 旧 collection 保留 24 小时后删除（防指针遗漏）
-6. 记录重建时间戳
+```mermaid
+flowchart TD
+    A["启动后台重建线程"] --> B["清空 Milvus user_memory collection"]
+    B --> C["从 PostgresStore<br/>读取所有记忆"]
+    C --> D["格式化文本<br/>批量向量化"]
+    D --> E["插入清空后的 collection"]
+    E --> F["记录重建时间戳"]
+    F --> End["结束"]
 ```
 
 ### 4.3 重建原子性保证
 
-- 重建过程在单独线程执行
-- 重建完成后才切换索引指针
-- 重建失败时保留旧索引，不影响服务
+- 重建过程在后台线程执行，不阻塞主服务
+- 重建前执行清空（delete_all），重建失败时 collection 为空（可接受，后续可手动重建）
+- 重建过程中如有查询，可能返回空结果（降级到拼接 PostgresStore 记忆）
 
 ---
 

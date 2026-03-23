@@ -270,6 +270,9 @@ class MemorySummaryMiddleware(AgentMiddleware):
         """总结对话并存储到 Store"""
         from langgraph.store.postgres import PostgresStore
 
+        # 开始总结
+        print(f"[MemorySummary] 开始总结线程 {thread_id} 的记忆")
+
         conversation_text = self._format_conversation(messages)
 
         summary_prompt = f"""请总结以下对话的要点，包括：
@@ -296,6 +299,7 @@ class MemorySummaryMiddleware(AgentMiddleware):
             with PostgresStore.from_conn_string(conn_string) as store:
                 store.setup()
 
+                # 命名空间 为 (memory, thread_id) 区分不同的线程记忆
                 namespace = ("memory", thread_id)
                 summary_key = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -326,5 +330,5 @@ class MemorySummaryMiddleware(AgentMiddleware):
                 lines.append(f"{role}: {content}")
         return "\n".join(lines[-50:])
 
-
+# 测试一下记忆总结中间件，每2轮对话总结一次，后面改为每25轮总结一次
 memory_summary_middleware = MemorySummaryMiddleware(trigger_turns=25)
