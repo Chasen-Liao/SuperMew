@@ -27,22 +27,22 @@
 ## Task 1: 配置项
 
 **Files:**
-- Modify: `backend/config.py:51`（文件末尾添加）
+- Modify: `backend/config.py`（文件末尾添加）
 
 - [ ] **Step 1: 添加配置项**
 
 在 `config.py` 末尾添加：
 
 ```python
-# ===== 记忆向量库 =====
-MEMORY_MILVUS_COLLECTION = os.getenv("MEMORY_MILVUS_COLLECTION", "user_memory")
+# ===== 记忆向量库配置 =====
+MEMORY_COLLECTION_NAME = os.getenv("MEMORY_COLLECTION_NAME", "user_memory")
 MEMORY_TOP_K = 5           # 向量库检索候选数
 MEMORY_RECALL_LIMIT = 3    # 最终召回使用数
 MEMORY_TOKEN_LIMIT = 500   # 记忆文本 token 上限
-
-# 重建策略
 MEMORY_REBUILD_HOUR = 3    # 每天凌晨 3 点重建
 ```
+
+> **命名说明：** 复用现有的 `MILVUS_HOST` / `MILVUS_PORT`，不重复定义。Collection 名称单独用 `MEMORY_COLLECTION_NAME`，与 spec 保持一致。
 
 - [ ] **Step 2: 提交**
 
@@ -89,7 +89,7 @@ class MemoryVectorStore:
 | `memory_type` | varchar | max_length=32（`profile` 或 `summary`） |
 | `source_key` | varchar | max_length=512 |
 | `text` | varchar | max_length=2000 |
-| `embedding` | FLOAT_VECTOR | dim=1024（Jina v3） |
+| `embedding` | FLOAT_VECTOR | **dim 需验证**（见附录） |
 | `created_at` | datetime | - |
 
 ### 2.3 实现步骤
@@ -113,21 +113,21 @@ def test_memory_vector_store_init_and_search(milvus_client):
             "memory_type": "profile",
             "source_key": "user_memory/profile",
             "text": "用户名叫张三，在清华大学读计算机系大三",
-            "embedding": [0.1] * 1024,
+            "embedding": [0.1] * 2560,  # TODO: 验证实际 dimension
             "created_at": "2026-03-23T00:00:00",
         },
         {
             "memory_type": "summary",
             "source_key": "memory/session1/summary_20260323",
             "text": "用户讨论了 RAG 系统的架构设计",
-            "embedding": [0.2] * 1024,
+            "embedding": [0.2] * 2560,  # TODO: 验证实际 dimension
             "created_at": "2026-03-23T01:00:00",
         },
     ]
     store.insert(test_data)
 
     # 检索
-    query_vec = [0.1] * 1024
+    query_vec = [0.1] * 2560  # TODO: 验证实际 dimension
     results = store.search(query_vec, top_k=2)
     assert len(results) <= 2
     assert all("text" in r for r in results)
@@ -146,7 +146,7 @@ Expected: FAIL — module not found
 """记忆向量存储 — 管理 user_memory collection 的创建、检索和重建"""
 from datetime import datetime
 from pymilvus import MilvusClient, DataType
-from config import MILVUS_HOST, MILVUS_PORT, MEMORY_MILVUS_COLLECTION, MEMORY_TOP_K
+from config import MILVUS_HOST, MILVUS_PORT, MEMORY_COLLECTION_NAME, MEMORY_TOP_K
 
 
 class MemoryVectorStore:
@@ -161,11 +161,11 @@ class MemoryVectorStore:
     ):
         self.host = host or MILVUS_HOST
         self.port = port or MILVUS_PORT
-        self.collection_name = collection_name or MEMORY_MILVUS_COLLECTION
+        self.collection_name = collection_name or MEMORY_COLLECTION_NAME
         self.embedding_service = embedding_service
         self.client = MilvusClient(uri=f"http://{self.host}:{self.port}")
 
-    def init_collection(self, dense_dim: int = 1024):
+    def init_collection(self, dense_dim: int = 2560):  # TODO: 验证实际 embedding dimension
         """初始化 user_memory collection（幂等）"""
         if self.client.has_collection(self.collection_name):
             return
@@ -339,10 +339,10 @@ def build_system_message(user_text: str = "") -> str:
                 if text:
                     memory_lines.append(f"[{mem_type}] {text}")
             if memory_lines:
-                # 控制 token 上限
+                # 控制 token 上限（500 tokens ≈ 2000 字符）
                 combined = "\n".join(memory_lines)
-                if len(combined) > MEMORY_TOKEN_LIMIT:
-                    combined = combined[:MEMORY_TOKEN_LIMIT]
+                if len(combined) > 2000:
+                    combined = combined[:2000]
                 return f"{_SOUL_PROMPT}\n\n【相关记忆】\n{combined}"
 
         # Milvus 无数据，降级回退到原始拼接
@@ -401,8 +401,7 @@ class MemoryRebuildTask:
 
     def __init__(self, store: MemoryVectorStore, embedding_service, user_memory_manager): ...
 
-    def rebuild_index(self): ...      # 核心重建逻辑
-    def rebuild_if_needed(self): ...  # 检查并执行重建
+    def rebuild_index(self): ...      # 核心重建逻辑（清空后全量写入）
     def format_profile_text(self, profile: dict) -> str: ...   # 格式化用户画像
     def format_summary_text(self, summary: dict) -> str: ...   # 格式化摘要
 ```
@@ -415,15 +414,16 @@ class MemoryRebuildTask:
 # backend/memory_tasks.py
 """记忆向量索引定时重建任务"""
 import threading
+import time
 from datetime import datetime
-from config import MEMORY_REBUILD_HOUR, MEMORY_MILVUS_COLLECTION
+from config import MEMORY_REBUILD_HOUR
 from memory_vector_store import MemoryVectorStore
 from embedding import EmbeddingService
 from middleware import user_memory_manager
 
 
 class MemoryRebuildTask:
-    """记忆向量索引重建任务（双 collection 交替策略）"""
+    """记忆向量索引重建任务（in-place 清空重建，MVP 版本）"""
 
     def __init__(self):
         self.store = MemoryVectorStore()
@@ -461,6 +461,25 @@ class MemoryRebuildTask:
         turn_count = summary_data.get("turn_count", 0)
         return f"[对话摘要] {summary}（{turn_count}轮对话，{timestamp}）"
 
+    def _iterate_summaries(self):
+        """从 PostgresStore 遍历所有对话摘要
+
+        ⚠️ LangGraph PostgresStore API 待验证。
+        预期返回格式：[{"key": "summary_20260323", "value": {...}}, ...]
+        实际实现时需确认 search/scan 语法。
+        """
+        from langgraph.store.postgres import PostgresStore
+        from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+
+        conn_string = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+        with PostgresStore.from_conn_string(conn_string) as pg_store:
+            pg_store.setup()
+            # TODO: 确认实际 API，可能需要用 pg_store.search 或 scan
+            # 示例（待验证）：
+            # for item in pg_store.search(["memory", ""], query="", limit=1000):
+            #     ...
+            pass
+
     def rebuild_index(self) -> dict:
         """执行全量重建索引，返回统计信息"""
         if self._rebuilding:
@@ -470,9 +489,8 @@ class MemoryRebuildTask:
         try:
             store = self.store
             store.init_collection()
-            store.delete_all()  # 清空旧数据
+            store.delete_all()
 
-            all_texts = []
             all_vectors = []
             all_metadatas = []
 
@@ -482,7 +500,6 @@ class MemoryRebuildTask:
                 text = self.format_profile_text(profile)
                 if text.strip():
                     vec = self.embedder.get_embeddings([text])[0]
-                    all_texts.append(text)
                     all_vectors.append(vec)
                     all_metadatas.append({
                         "memory_type": "profile",
@@ -491,43 +508,28 @@ class MemoryRebuildTask:
                         "created_at": profile.get("updated_at", datetime.now().isoformat()),
                     })
 
-            # 2. 读取并向量化对话摘要（从 PostgresStore 遍历所有 namespace）
-            from langgraph.store.postgres import PostgresStore
-            from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
-
-            conn_string = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+            # 2. 读取并向量化对话摘要（PostgresStore API 待验证）
             try:
-                with PostgresStore.from_conn_string(conn_string) as pg_store:
-                    pg_store.setup()
-                    # 遍历 memory namespace 下的所有摘要
-                    try:
-                        all_items = pg_store.search(["memory", ""], query="", limit=1000)
-                        for item in all_items:
-                            if item.key.startswith("summary_"):
-                                text = self.format_summary_text(item.value)
-                                if text.strip():
-                                    vec = self.embedder.get_embeddings([text])[0]
-                                    all_texts.append(text)
-                                    all_vectors.append(vec)
-                                    all_metadatas.append({
-                                        "memory_type": "summary",
-                                        "source_key": f"memory/{item.key}",
-                                        "text": text,
-                                        "created_at": item.value.get("timestamp", ""),
-                                    })
-                    except Exception:
-                        pass  # 没有摘要时忽略
+                for item in self._iterate_summaries():
+                    if item.get("key", "").startswith("summary_"):
+                        text = self.format_summary_text(item["value"])
+                        if text.strip():
+                            vec = self.embedder.get_embeddings([text])[0]
+                            all_vectors.append(vec)
+                            all_metadatas.append({
+                                "memory_type": "summary",
+                                "source_key": f"memory/{item['key']}",
+                                "text": text,
+                                "created_at": item["value"].get("timestamp", ""),
+                            })
             except Exception as e:
-                print(f"[MemoryRebuild] PostgresStore 连接失败: {e}")
+                print(f"[MemoryRebuild] 遍历摘要失败: {e}")
 
-            # 3. 批量插入 Milvus
+            # 3. 批量插入
             rebuilt_count = 0
             if all_vectors:
                 data = [
-                    {
-                        **meta,
-                        "embedding": vec,
-                    }
+                    {**meta, "embedding": vec}
                     for meta, vec in zip(all_metadatas, all_vectors)
                 ]
                 store.insert(data)
@@ -535,12 +537,7 @@ class MemoryRebuildTask:
 
             self._last_rebuilt_at = datetime.now().isoformat()
             print(f"[MemoryRebuild] 重建完成，共 {rebuilt_count} 条记忆")
-
-            return {
-                "status": "ok",
-                "rebuilt_count": rebuilt_count,
-                "last_rebuilt_at": self._last_rebuilt_at,
-            }
+            return {"status": "ok", "rebuilt_count": rebuilt_count, "last_rebuilt_at": self._last_rebuilt_at}
         finally:
             self._rebuilding = False
 
@@ -548,7 +545,6 @@ class MemoryRebuildTask:
         return self._rebuilding
 
 
-# 全局单例
 _memory_rebuild_task: MemoryRebuildTask | None = None
 
 def get_memory_rebuild_task() -> MemoryRebuildTask:
@@ -563,50 +559,40 @@ def run_rebuild_in_background():
     def _bg():
         task = get_memory_rebuild_task()
         task.rebuild_index()
-    t = threading.Thread(target=_bg, daemon=True)
-    t.start()
+    threading.Thread(target=_bg, daemon=True).start()
 ```
 
-> **注意：** `PostgresStore.search` API 需要确认。上面的遍历方式可能需要根据实际 API 调整。实际实现时需要检查 LangGraph PostgresStore 的 search 语法。
+- [ ] **Step 2: 注册定时任务（使用 threading.Timer）**
 
-- [ ] **Step 2: 注册定时任务**
-
-在 `backend/app.py` 中，在 `create_app()` 末尾添加启动事件：
-
-```python
-# 启动后执行一次记忆索引重建（后台）
-@app.on_event("startup")
-async def startup_memory_rebuild():
-    from memory_tasks import run_rebuild_in_background
-    run_rebuild_in_background()
-```
-
-同时在 `backend/app.py` 顶部添加导入：
+在 `backend/app.py` 的 `create_app()` 末尾添加：
 
 ```python
 import threading
-from memory_tasks import get_memory_rebuild_task, MemoryRebuildTask
-from memory_vector_store import MemoryVectorStore
-```
+from memory_tasks import get_memory_rebuild_task
 
-并添加定时调度（在 startup 事件中设置）：
-
-```python
-import schedulers  # 需要确认项目中是否有 scheduler 库
-
-# 在 startup_memory_rebuild 函数中添加：
-import time
-scheduler = schedulers.ThreadScheduler()
-def _daily_rebuild():
+# 启动时执行一次全量重建
+@app.on_event("startup")
+async def startup_memory_rebuild():
     task = get_memory_rebuild_task()
-    task.rebuild_index()
+    task.rebuild_index()  # 同步执行，首次启动重建完成后才继续
 
-# 每天凌晨3点执行
-scheduler.repeat(_daily_rebuild, hour=MEMORY_REBUILD_HOUR, minute=0)
-scheduler.start()
+    # 每天凌晨定时重建（使用简单 Timer 循环）
+    def _schedule_daily():
+        task = get_memory_rebuild_task()
+        task.rebuild_index()
+        # 计算距离明天凌晨3点还有多少秒
+        now = datetime.now()
+        target_hour = 3
+        next_run = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+        if now.hour >= target_hour:
+            next_run += timedelta(days=1)
+        delay_seconds = (next_run - now).total_seconds()
+        threading.Timer(delay_seconds, _schedule_daily).start()
+
+    threading.Timer(0, _schedule_daily).start()
 ```
 
-> **备选方案（如果项目没有 schedulers 库）：** 使用 APScheduler，在 `requirements.txt` 中添加 `apscheduler`，或在 `app.py` 中用 `threading.Timer` 实现简单定时。
+> **定时方案说明：** 使用标准库 `threading.Timer` 实现简单定时，不依赖 APScheduler。每日凌晨 3 点触发重建，重建完成后计算下一次执行时间并设置新的 Timer。
 
 - [ ] **Step 3: 提交**
 
@@ -703,7 +689,7 @@ curl -X POST http://127.0.0.1:8000/api/chat \
 
 | 依赖 | 确认方式 |
 |------|---------|
-| `apscheduler` | 检查 `requirements.txt` 是否已有，没有则需添加 |
+| Embedding dimension | 现有 `milvus_client.py` 的 `init_collection` 默认 dim=2560；实际以 API 返回为准，实现时需验证 |
 | `pymilvus` | 已有（在 `milvus_client.py` 使用） |
-| LangGraph `PostgresStore.search` API | 需确认 search 的 namespace 和返回格式 |
-| Jina Embedding dim | 当前 `embedding.py` 用的是 Qwen embedding，dim 需确认为 1024 还是其他值 |
+| LangGraph `PostgresStore` 遍历 API | 需确认 `search`/`scan` 方法的 namespace 语法和返回格式 |
+| `datetime` / `threading.Timer` | Python 标准库，无需安装 |
