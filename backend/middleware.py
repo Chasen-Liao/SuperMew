@@ -1,4 +1,4 @@
-from langchain.agents.middleware import before_model, AgentMiddleware, AgentState
+from langchain.agents.middleware import before_model, AgentMiddleware, AgentState, dynamic_prompt, ModelRequest
 from langchain_core.messages import HumanMessage, AIMessage
 from datetime import datetime
 from typing import Any, Optional
@@ -6,6 +6,8 @@ from langgraph.types import Command
 from langgraph.store.postgres import PostgresStore
 from pydantic import BaseModel, Field
 from config import MODEL, BASE_URL, API_KEY, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+from dataclasses import dataclass
+from pathlib import Path
 import os
 
 
@@ -332,3 +334,25 @@ class MemorySummaryMiddleware(AgentMiddleware):
 
 # 测试一下记忆总结中间件，每2轮对话总结一次，后面改为每25轮总结一次
 memory_summary_middleware = MemorySummaryMiddleware(trigger_turns=25)
+
+
+@dataclass
+class Context:
+    """Agent 运行时上下文 schema"""
+    user_id: str
+
+
+def _load_soul_prompt() -> str:
+    """加载 soul.md 系统提示词"""
+    soul_path = Path(__file__).parent / "soul" / "soul.md"
+    return soul_path.read_text(encoding="utf-8")
+
+
+@dynamic_prompt
+def system_prompt_middleware(request: ModelRequest) -> str:
+    """动态生成系统提示词：soul.md + 用户记忆"""
+    soul_prompt = _load_soul_prompt()
+    memory = load_user_memory_for_prompt()
+    if memory:
+        return f"{soul_prompt}\n\n{memory}"
+    return soul_prompt

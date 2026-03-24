@@ -67,6 +67,7 @@ class RewriteStrategy(BaseModel):
 
 
 class RAGState(TypedDict):
+    """扩展自定义的State Schema"""
     question: str
     query: str
     context: str
@@ -354,14 +355,15 @@ def retrieve_expanded(state: RAGState) -> RAGState:
 
 
 def build_rag_graph():
+    #? 这里是 RAG 图的构建过程，包括节点和边的定义。
     graph = StateGraph(RAGState)
-    graph.add_node("retrieve_initial", retrieve_initial)
-    graph.add_node("grade_documents", grade_documents_node)
-    graph.add_node("rewrite_question", rewrite_question_node)
-    graph.add_node("retrieve_expanded", retrieve_expanded)
+    graph.add_node("retrieve_initial", retrieve_initial) # 初始检索节点
+    graph.add_node("grade_documents", grade_documents_node) # 文档评分节点
+    graph.add_node("rewrite_question", rewrite_question_node) # 问题重写节点
+    graph.add_node("retrieve_expanded", retrieve_expanded) # 扩展检索节点
 
-    graph.set_entry_point("retrieve_initial")
-    graph.add_edge("retrieve_initial", "grade_documents")
+    graph.set_entry_point("retrieve_initial") # 设置初始检索节点为入口点
+    graph.add_edge("retrieve_initial", "grade_documents") # 初始检索节点到文档评分节点的边
     graph.add_conditional_edges(
         "grade_documents",
         lambda state: state.get("route"),
@@ -370,8 +372,8 @@ def build_rag_graph():
             "rewrite_question": "rewrite_question",
         },
     )
-    graph.add_edge("rewrite_question", "retrieve_expanded")
-    graph.add_edge("retrieve_expanded", END)
+    graph.add_edge("rewrite_question", "retrieve_expanded") # 问题重写节点到扩展检索节点的边
+    graph.add_edge("retrieve_expanded", END) # 扩展检索节点到结束节点的边
     return graph.compile()
 
 

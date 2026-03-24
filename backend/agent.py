@@ -7,7 +7,7 @@ from pathlib import Path
 from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
-from middleware import memory_summary_middleware, extract_and_save_user_memory_async, load_user_memory_for_prompt
+from middleware import memory_summary_middleware, extract_and_save_user_memory_async, load_user_memory_for_prompt, system_prompt_middleware, Context
 from langchain_core.messages import AIMessageChunk
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.store.postgres import PostgresStore
@@ -105,19 +105,6 @@ class ConversationStorage:
 
 
 
-# 全局读取 soul.md
-_soul_prompt = Path(__file__).parent / "soul" / "soul.md"
-_SOUL_PROMPT = _soul_prompt.read_text(encoding="utf-8")
-
-
-def build_system_message() -> str:
-    """构建完整的系统提示词（soul.md + 用户记忆）"""
-    memory = load_user_memory_for_prompt()
-    if memory:
-        return f"{_SOUL_PROMPT}\n\n{memory}"
-    return _SOUL_PROMPT
-
-
 def create_agent_instance():
     model = init_chat_model(
         model=MODEL,
@@ -136,12 +123,12 @@ def create_agent_instance():
         base_url=BASE_URL,
     )
 
-    # 不传 system_prompt，改为每次调用时手动 prepend
     agent = create_agent(
         model=model,
         tools=[get_current_weather, search_knowledge_base],
         checkpointer=checkpointer,
         store=store,
+        context_schema=Context,
         middleware=[
             SummarizationMiddleware(
                 model=summary_model,
@@ -149,6 +136,7 @@ def create_agent_instance():
                 keep=("messages", 12),
             ),
             memory_summary_middleware,
+            system_prompt_middleware,
         ],
     )
     return agent, model
@@ -174,15 +162,14 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     # 提取用户信息并保存到 Store（后台异步执行）
     extract_and_save_user_memory_async(user_text)
 
-    # 构建完整的系统提示词（soul.md + 用户记忆），拼接到用户消息前
+    # 系统提示词由 dynamic_prompt 中间件自动生成，无需手动拼接
     from langchain_core.messages import HumanMessage
-    system_content = build_system_message()
-    combined_message = f"{system_content}\n\n用户问题：{user_text}"
-    messages = [HumanMessage(content=combined_message)]
+    messages = [HumanMessage(content=user_text)]
 
     result = agent.invoke(
         {"messages": messages},
         config=config,
+        context={"user_id": user_id},
     )
 
     response_content = ""
@@ -263,19 +250,16 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
         """同步运行 agent.stream() 并将 chunk 推入队列。"""
         nonlocal full_response
         try:
-            from langchain_core.messages import HumanMessage, SystemMessage
+            from langchain_core.messages import HumanMessage
 
-            # 构建完整的系统提示词（soul.md + 用户记忆），确保 SystemMessage 在最前面
-            system_content = build_system_message()
-            # 将系统提示词作为前缀文本拼接到用户消息中
-            # 避免 SystemMessage 与 agent 内部处理冲突
-            combined_message = f"{system_content}\n\n用户问题：{user_text}"
-            messages = [HumanMessage(content=combined_message)]
+            # 系统提示词由 dynamic_prompt 中间件自动生成，无需手动拼接
+            messages = [HumanMessage(content=user_text)]
 
             for mode, data in agent.stream(
                 {"messages": messages},
                 config=config,
                 stream_mode=["messages", "updates"],
+                context={"user_id": user_id},
             ):
                 if mode == "messages":
                     msg, metadata = data
