@@ -169,7 +169,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 8. multi-agent：工具过多，把工具拆分给职责明确的专业化agent，提升工具选择的准确性和整体稳定性
 9. 历史记录会话名称可修改
 10. 死循环检测与恢复：\_is\_stuck + attempt\_loop\_recovery
-11. 记忆向量库按用户隔离（当前所有记忆共用 default thread_id）
+11. 记忆向量库按用户隔离（当前所有记忆共用 default thread\_id）
 12. 记忆检索结果可视化：展示召回了哪些记忆片段
 
 ### 后端服务建设
@@ -184,7 +184,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
   - [api.py](backend/api.py)：聊天、会话管理、文档管理接口。
   - [agent.py](backend/agent.py)：LangChain Agent、PostgresSaver checkpointer、PostgresStore 长期记忆。
   - [middleware.py](backend/middleware.py)：`UserMemoryManager` 用户画像提取 + `memory_summary_hook` 摘要钩子 + `system_prompt_middleware` 动态系统提示词。
-  - [memory\_vector\_store.py](backend/memory_vector_store.py)：Milvus user_memory collection 管理（创建、插入、检索）。
+  - [memory\_vector\_store.py](backend/memory_vector_store.py)：Milvus user\_memory collection 管理（创建、插入、检索）。
   - [tools.py](backend/tools.py)：天气查询、知识库检索、记忆检索工具。
   - [rag\_pipeline.py](backend/rag_pipeline.py)：LangGraph RAG 工作流（检索→评分→重写→二次检索）。
   - [rag\_utils.py](backend/rag_utils.py)：检索、查询重写、HyDE 实现。
@@ -275,7 +275,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 
 1. `memory_summary_hook` 通过 `@after_model` 钩子实现，每轮对话后检查是否达到触发轮数（默认25轮）。
 2. 满足条件时，提取最近25轮对话内容，调用 LLM 生成摘要。
-3. 摘要文本生成稠密+稀疏向量，直接写入 Milvus user_memory collection。
+3. 摘要文本生成稠密+稀疏向量，直接写入 Milvus user\_memory collection。
 4. 后续对话可通过 `search_memory` 工具混合检索召回相关记忆。
 
 ## 记忆架构（Memory Architecture）
@@ -365,13 +365,13 @@ graph TB
 
 ### 核心组件
 
-| 组件 | 文件 | 职责 |
-|------|------|------|
-| `memory_summary_hook` | `middleware.py` | `@after_model` 钩子，每25轮自动摘要对话并写入 Milvus |
-| `UserMemoryManager` | `middleware.py` | LLM 提取用户信息 + PostgresStore 持久化 |
-| `MemoryVectorStore` | `memory_vector_store.py` | Milvus user_memory collection 管理（创建、插入、检索） |
-| `search_memory` | `tools.py` | 记忆检索工具，支持混合检索 + RRF 融合 |
-| `system_prompt_middleware` | `middleware.py` | 动态拼接系统提示词：soul.md + 用户画像 |
+| 组件                         | 文件                       | 职责                                          |
+| -------------------------- | ------------------------ | ------------------------------------------- |
+| `memory_summary_hook`      | `middleware.py`          | `@after_model` 钩子，每25轮自动摘要对话并写入 Milvus      |
+| `UserMemoryManager`        | `middleware.py`          | LLM 提取用户信息 + PostgresStore 持久化              |
+| `MemoryVectorStore`        | `memory_vector_store.py` | Milvus user\_memory collection 管理（创建、插入、检索） |
+| `search_memory`            | `tools.py`               | 记忆检索工具，支持混合检索 + RRF 融合                      |
+| `system_prompt_middleware` | `middleware.py`          | 动态拼接系统提示词：soul.md + 用户画像                    |
 
 ### 数据流
 
@@ -381,11 +381,11 @@ graph TB
 
 ### 配置项
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
+| 变量                       | 默认值           | 说明                  |
+| ------------------------ | ------------- | ------------------- |
 | `MEMORY_COLLECTION_NAME` | `user_memory` | Milvus collection 名 |
-| `MEMORY_TOP_K` | `5` | 向量检索候选数 |
-| `TRIGGER_TURNS` | `25` | 摘要触发轮数 |
+| `MEMORY_TOP_K`           | `5`           | 向量检索候选数             |
+| `TRIGGER_TURNS`          | `25`          | 摘要触发轮数              |
 
 ## 技术栈
 
@@ -557,7 +557,7 @@ StreamingResponse(
 #### 1) ReadableStream 解析 (`script.js`)
 
 - 使用 `response.body.getReader()` + `TextDecoder` 逐块读取。
-- 手动按 `\n\n` 分割 SSE 事件，解析 `data: `      前缀后的 JSON。
+- 手动按 `\n\n` 分割 SSE 事件，解析 `data: `       前缀后的 JSON。
 - `content` 事件追加到消息文本；`rag_step` 事件追加到检索步骤数组并同步更新思考状态文字。
 
 #### 2) 思考气泡
