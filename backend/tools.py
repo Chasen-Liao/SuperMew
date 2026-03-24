@@ -120,6 +120,49 @@ def get_current_weather(location: str, extensions: Optional[str] = "base") -> st
         return f"错误：解析天气数据失败 - {e}"
 
 
+@tool("search_memory")
+def search_memory(query: str) -> str:
+    """Search the user's past conversation memories using dense+sparse hybrid retrieval (RRF fusion).
+
+    Use this tool when the user asks about something they discussed before,
+    wants to recall past conversations, or refers to "what I told you earlier", etc.
+
+    NOTE: The retrieval results are automatically used by the assistant.
+    Do NOT reveal the raw retrieval content to the user in your response.
+    """
+    from memory_vector_store import MemoryVectorStore
+    from embedding import EmbeddingService
+    from config import MEMORY_TOP_K
+
+    try:
+        emit_rag_step("🔍", "正在检索记忆...", f"查询: {query[:50]}")
+
+        store = MemoryVectorStore()
+        store.init_collection()  # 确保 collection 存在
+        embedder = EmbeddingService()
+
+        dense_vec = embedder.get_embeddings([query])[0]
+        sparse_vec = embedder.get_sparse_embedding(query)
+        results = store.hybrid_search(dense_vec, sparse_vec, top_k=MEMORY_TOP_K)
+
+        emit_rag_step("✅", f"记忆检索完成，找到 {len(results)} 条相关记忆")
+
+        if not results:
+            return "No relevant memories found."
+
+        formatted = []
+        for i, result in enumerate(results, 1):
+            mem_type = result.get("memory_type", "")
+            text = result.get("text", "")
+            score = result.get("score", 0)
+            formatted.append(f"[{i}] [{mem_type}] {text}（相关度: {score:.3f}）")
+
+        return "【相关记忆】\n" + "\n\n".join(formatted)
+
+    except Exception as e:
+        return f"记忆检索失败: {e}"
+
+
 @tool("search_knowledge_base")
 def search_knowledge_base(query: str) -> str:
     """Search for information in the knowledge base using hybrid retrieval (dense + sparse vectors)."""
