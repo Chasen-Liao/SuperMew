@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from memory_vector_store import MemoryVectorStore
 from embedding import EmbeddingService
 
-TRIGGER_TURNS = 2  # 每 25 轮触发一次摘要
+TRIGGER_TURNS = 25  # 每 25 轮触发一次摘要
 
 
 # LLM 提取用的 Pydantic 模型
@@ -76,14 +76,14 @@ class UserMemoryManager:
 - 只提取明确提到的信息，不要推测
 - 如果某项信息没有提到，留空
 - 如果提到了关系人的名字，一定要包含在提取结果中
-  例如："女朋友叫做洪海艳" → relationship: "女朋友（洪海艳）"
-       "我男朋友是张三" → relationship: "男朋友（张三）"
+  例如："女朋友叫做xxx" → relationship: "女朋友"
+       "我男朋友是xxx" → relationship: "男朋友"
 - name: 名字/昵称
 - school: 学校或公司
 - major: 专业或工作领域
 - grade: 年级（大一/大二/大三/大四/研一/研二/研三/博一/博二/博三）
 - identity: 身份（学生/工程师/老师等）
-- relationship: 重要关系及对方名字（格式：关系（名字），如：女朋友（洪海艳））
+- relationship: 重要关系及对方名字（格式：关系（名字），如：女朋友）
 - interest: 兴趣爱好
 - location: 所在地
 - other: 其他重要信息
@@ -284,14 +284,12 @@ def memory_summary_hook(state: AgentState, runtime: Runtime) -> dict | None:
     if not messages:
         return None
 
-    thread_id = "default"
-
     user_turns = sum(1 for msg in messages if isinstance(msg, HumanMessage))
 
     if user_turns == 0 or user_turns % TRIGGER_TURNS != 0:
         return None
 
-    print(f"[memory_summary_hook] 触发摘要 thread={thread_id} user_turns={user_turns}")
+    print(f"[memory_summary_hook] 触发摘要")
 
     conversation_text = _format_conversation_for_summary(messages, TRIGGER_TURNS)
     summary_text = _summarize_conversation(conversation_text)

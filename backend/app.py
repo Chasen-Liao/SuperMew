@@ -42,12 +42,13 @@ def create_app() -> FastAPI:
     if FRONTEND_DIR.exists():
         app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static")
 
-    # 启动时执行一次记忆索引重建，并调度每日定时重建
+    # 启动时初始化 user_memory collection（幂等：已存在则跳过）
     @app.on_event("startup")
-    async def startup_memory_rebuild():
-        from memory_tasks import run_rebuild_in_background, _schedule_daily_rebuild
-        run_rebuild_in_background()
-        _schedule_daily_rebuild()
+    def init_memory_collection():
+        from memory_vector_store import MemoryVectorStore
+        store = MemoryVectorStore()
+        store.init_collection()
+        print("[Startup] user_memory collection initialized")
 
     return app
 

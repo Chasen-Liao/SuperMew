@@ -270,24 +270,3 @@ async def delete_document(filename: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除文档失败: {str(e)}")
 
-
-@router.post("/memory/rebuild")
-async def rebuild_memory_index():
-    """手动触发记忆向量索引重建"""
-    try:
-        from memory_tasks import get_memory_rebuild_task
-        task = get_memory_rebuild_task()
-
-        if task.is_rebuilding():
-            raise HTTPException(status_code=400, detail="rebuild already in progress")
-
-        result = task.rebuild_index()
-        return {
-            "status": result.get("status"),
-            "rebuilt_count": result.get("rebuilt_count", 0),
-            "last_rebuilt_at": result.get("last_rebuilt_at"),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
