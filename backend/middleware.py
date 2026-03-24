@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from memory_vector_store import MemoryVectorStore
 from embedding import EmbeddingService
 
-TRIGGER_TURNS = 25  # 每 25 轮触发一次摘要
+TRIGGER_TURNS = 2  # 每 25 轮触发一次摘要
 
 @dataclass
 class Context:
@@ -45,6 +45,7 @@ class UserMemoryManager:
 
     """
     Store 存储的是结构化的 UserInfo 模型
+    当Human发送的消息有包含用户信息时，调用 LLM 提取并存储到 PostgresStore
     """
 
     _instance = None
@@ -296,7 +297,7 @@ def memory_summary_hook(state: AgentState, runtime: Runtime[Context]) -> dict | 
         return None
 
     thread_id = runtime.context.thread_id
-    print(f"[memory_summary_hook] 触发摘要 线程ID: {thread_id}")
+    print(f"[memory_summary_hook] 触发摘要ID: {thread_id}")
 
     conversation_text = _format_conversation_for_summary(messages, TRIGGER_TURNS)
     summary_text = _summarize_conversation(conversation_text)

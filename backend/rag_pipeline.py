@@ -55,7 +55,7 @@ GRADE_PROMPT = (
 class GradeDocuments(BaseModel):
     """Grade documents using a binary score for relevance check."""
 
-    binary_score: str = Field(
+    binary_score: Literal["yes", "no"] = Field(
         description="Relevance score: 'yes' if relevant, or 'no' if not relevant"
     )
 
