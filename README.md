@@ -45,7 +45,7 @@ uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 
 ```env
 # ===== Model =====
-ARK_API_KEY=your_ark_api_key
+API_KEY=your_api_key
 MODEL=your_model_name
 BASE_URL=https://your-llm-endpoint/v1
 EMBEDDER=your_embedding_model
@@ -178,10 +178,12 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 ## 目录与架构
 
 - 后端：`backend/`
-  - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载。
-  - [api.py](backend/api.py)：聊天、会话管理、文档管理接口。
+  - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载、定时记忆重建调度。
+  - [api.py](backend/api.py)：聊天、会话管理、文档管理、记忆重建接口。
   - [agent.py](backend/agent.py)：LangChain Agent、PostgresSaver checkpointer、PostgresStore 长期记忆。
-  - [middleware.py](backend/middleware.py)：用户记忆提取与存储（LLM 提取 + PostgresStore 持久化）。
+  - [middleware.py](backend/middleware.py)：`UserMemoryManager` 用户画像提取存储 + `MemorySummaryMiddleware` 对话摘要 + `system_prompt_middleware` 动态系统提示词。
+  - [memory\_vector\_store.py](backend/memory_vector_store.py)：Milvus user_memory collection 管理（创建、检索、清空重建）。
+  - [memory\_tasks.py](backend/memory_tasks.py)：记忆索引定时重建任务（每日凌晨 + API 手动触发）。
   - [tools.py](backend/tools.py)：天气查询、知识库检索工具。
   - [rag\_pipeline.py](backend/rag_pipeline.py)：LangGraph RAG 工作流（检索→评分→重写→二次检索）。
   - [rag\_utils.py](backend/rag_utils.py)：检索、查询重写、HyDE 实现。
@@ -190,6 +192,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
   - [parent\_chunk\_store.py](backend/parent_chunk_store.py)：父级分块 DocStore（用于 Auto-merging 回取父块）。
   - [milvus\_writer.py](backend/milvus_writer.py)：向量写入（稠密+稀疏）。
   - [milvus\_client.py](backend/milvus_client.py)：Milvus 集合定义、混合检索。
+  - [migrate\_to\_checkpointer.py](backend/migrate_to_checkpointer.py)：历史 `customer_service_history.json` 数据迁移到 PostgresSaver checkpointer。
   - [schemas.py](backend/schemas.py)：Pydantic 请求/响应模型。
   - [config.py](backend/config.py)：环境变量配置。
 - 前端：`frontend/`
@@ -265,7 +268,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 1. 用户每次发送消息时，后台异步调用 `extract_and_save_user_memory_async(user_text)`。
 2. LLM 从消息中提取结构化用户信息（姓名、学校、身份、兴趣等）。
 3. 通过 PostgresStore 持久化到 PostgreSQL，使用合并模式（只更新非空字段）。
-4. 下次对话时，`build_system_message()` 自动加载用户记忆拼接到系统提示词。
+4. 下次对话时，`system_prompt_middleware` 中的 `load_user_memory_for_prompt()` 自动加载用户记忆并向量检索相关记忆，拼接到系统提示词。
 
 ## 记忆架构（Memory Architecture）
 
@@ -325,7 +328,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 
 ## 技术栈
 
-- 后端：FastAPI、LangChain Agents、LangGraph、Pydantic、Uvicorn。
+- 后端：FastAPI、LangChain Agents、LangGraph、Pydantic、Uvicorn、LangSmith tracing。
 - 向量与检索：Milvus（HNSW 稠密索引 + SPARSE\_INVERTED\_INDEX 稀疏索引）、RRF 融合、Jina Rerank 精排。
 - 嵌入与稀疏：自定义 API 调用获取稠密向量；BM25 手写稀疏向量；同时输出双塔特征。
 - 持久化：PostgreSQL（PostgresSaver checkpointer + PostgresStore）。
@@ -336,11 +339,12 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 
 需在仓库根目录或运行环境配置（参考 `.env.example`）：
 
-- 模型相关：`ARK_API_KEY`、`MODEL`、`BASE_URL`、`EMBEDDER`
+- 模型相关：`API_KEY`、`MODEL`、`BASE_URL`、`EMBEDDER`
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
 - PostgreSQL：`POSTGRES_HOST`、`POSTGRES_PORT`、`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`
 - Auto-merging：`AUTO_MERGE_ENABLED`、`AUTO_MERGE_THRESHOLD`、`LEAF_RETRIEVE_LEVEL`
+- 记忆向量库：`MEMORY_COLLECTION_NAME`、`MEMORY_TOP_K`、`MEMORY_RECALL_LIMIT`、`MEMORY_REBUILD_HOUR`
 - 工具：`AMAP_WEATHER_API`、`AMAP_API_KEY`
 
 ## API 速览
@@ -353,6 +357,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 - `GET /documents`：列出已入库文档及 chunk 数。
 - `POST /documents/upload`：上传并向量化 PDF/Word。
 - `DELETE /documents/{filename}`：删除指定文档的向量数据。
+- `POST /api/memory/rebuild`：手动触发记忆索引全量重建。
 
 ## 流式输出与 RAG Trace — 技术细节
 
