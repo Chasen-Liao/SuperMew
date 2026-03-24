@@ -42,6 +42,13 @@ def create_app() -> FastAPI:
     if FRONTEND_DIR.exists():
         app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static")
 
+    # 启动时执行一次记忆索引重建，并调度每日定时重建
+    @app.on_event("startup")
+    async def startup_memory_rebuild():
+        from memory_tasks import run_rebuild_in_background, _schedule_daily_rebuild
+        run_rebuild_in_background()
+        _schedule_daily_rebuild()
+
     return app
 
 
