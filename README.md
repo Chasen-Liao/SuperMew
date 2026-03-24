@@ -126,6 +126,8 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 - **RAG 过程可观测**：记录检索、评分、重写与来源信息，回答完成后前端可展开查看完整 RAG Trace。
 - **查询重写体系**：Step-Back 与 HyDE 两种扩展方式 + 路由选择，必要时触发重写检索。
 - **相关性评分门控**：基于结构化输出的 `grade_documents` 判断是否需要重写检索。
+- **记忆向量索引检索**：用户画像与对话摘要通过 Embedding 向量化存入 Milvus，检索时根据当前对话内容召回最相关的历史记忆，拼接到系统提示词，实现上下文感知的个性化记忆调用。
+- **定时 + API 双模式索引重建**：每日凌晨3点自动执行 in-place 清空重建；同步提供 `POST /api/memory/rebuild` 接口支持手动触发，确保记忆向量与 PostgresStore 数据保持同步。
 
 ## 未来迭代（Todo Lists）
 
@@ -264,6 +266,62 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 2. LLM 从消息中提取结构化用户信息（姓名、学校、身份、兴趣等）。
 3. 通过 PostgresStore 持久化到 PostgreSQL，使用合并模式（只更新非空字段）。
 4. 下次对话时，`build_system_message()` 自动加载用户记忆拼接到系统提示词。
+
+## 记忆架构（Memory Architecture）
+
+本系统采用**三层记忆架构**，兼顾短期会话上下文、长期结构化用户画像、以及语义层面的记忆检索。
+
+### 架构概览
+
+```
+用户消息
+   │
+   ├─── 1. 会话记忆（PostgresSaver Checkpointer）
+   │         └─ 持久化会话历史，支持会话切换与恢复
+   │
+   ├─── 2. 用户画像记忆（PostgresStore + Milvus 向量）
+   │         ├─ LLM 提取结构化信息（姓名、学校、身份、兴趣…）
+   │         ├─ 文本格式化后 Embedding → Milvus user_memory collection
+   │         └─ 检索时向量召回最相关画像片段
+   │
+   └─── 3. 对话摘要记忆（PostgresStore + Milvus 向量）
+             ├─ 每25轮自动总结对话要点
+             ├─ 摘要文本 Embedding → Milvus
+             └─ 定时重建任务批量同步历史摘要到向量库
+```
+
+### 核心组件
+
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| `MemoryVectorStore` | `memory_vector_store.py` | Milvus user_memory collection 的创建、插入、检索、清空重建 |
+| `UserMemoryManager` | `middleware.py` | LLM 提取用户信息 + PostgresStore 持久化 + 格式化系统提示词 |
+| `MemorySummaryMiddleware` | `middleware.py` | 每25轮自动总结对话，存入 PostgresStore |
+| `MemoryRebuildTask` | `memory_tasks.py` | 定时/手动触发全量向量索引重建 |
+| `system_prompt_middleware` | `middleware.py` | 动态拼接系统提示词：soul.md + 向量检索召回的相关记忆 |
+
+### 数据流
+
+1. **用户画像构建**：用户对话 → `should_extract_memory` 关键词过滤 → `extract_from_text` LLM 提取结构化信息 → `save_user_info` 合并写入 PostgresStore
+2. **向量索引写入**：PostgresStore 画像/摘要 → `MemoryRebuildTask.rebuild_index` → `EmbeddingService.get_embeddings` → `MemoryVectorStore.insert` → Milvus
+3. **记忆召回**：用户消息 → `EmbeddingService.get_embeddings` → `MemoryVectorStore.search` → Top-K 相关记忆 → 拼接到系统提示词
+
+### 记忆索引重建策略
+
+采用 **in-place 清空重建**（而非增量更新）：
+
+- 优点：实现简单、避免向量库冗余、无需管理版本
+- 触发方式：每日凌晨3点 `threading.Timer` 自动调度 / `POST /api/memory/rebuild` 手动调用
+- 流程：清空 collection → 从 PostgresStore 读取全部 profile + summaries → 重新向量化并插入
+
+### 配置项
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `MEMORY_COLLECTION_NAME` | `user_memory` | Milvus collection 名 |
+| `MEMORY_TOP_K` | `5` | 向量检索候选数 |
+| `MEMORY_RECALL_LIMIT` | `3` | 最终召回使用数 |
+| `MEMORY_REBUILD_HOUR` | `3` | 每日重建小时（凌晨） |
 
 ## 技术栈
 
