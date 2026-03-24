@@ -285,8 +285,6 @@ def memory_summary_hook(state: AgentState, runtime: Runtime) -> dict | None:
         return None
 
     thread_id = "default"
-    if runtime.run_config and runtime.run_config.get("configurable"):
-        thread_id = runtime.run_config["configurable"].get("thread_id", "default")
 
     user_turns = sum(1 for msg in messages if isinstance(msg, HumanMessage))
 
