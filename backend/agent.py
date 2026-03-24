@@ -137,7 +137,7 @@ def create_agent_instance():
         middleware=[
             SummarizationMiddleware(
                 model=summary_model,
-                trigger=("tokens", 80000),
+                trigger=("tokens", 8000),
                 keep=("messages", 12),
             ),
             memory_summary_middleware,
