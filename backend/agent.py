@@ -1,9 +1,14 @@
 import os
+import sys
 import json
 import asyncio
 import queue
 import threading
 from pathlib import Path
+
+# 确保 backend 目录在 sys.path 中
+sys.path.insert(0, str(Path(__file__).parent))
+
 from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
