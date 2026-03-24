@@ -289,6 +289,7 @@ def memory_summary_hook(state: AgentState, runtime: Runtime) -> dict | None:
     if user_turns == 0 or user_turns % TRIGGER_TURNS != 0:
         return None
 
+    thread_id = "default"
     print(f"[memory_summary_hook] 触发摘要")
 
     conversation_text = _format_conversation_for_summary(messages, TRIGGER_TURNS)
