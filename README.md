@@ -104,15 +104,17 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 ## 项目概览
 
 - **核心能力**：
-  - LangChain Agent + 自定义工具（天气查询、知识库检索）。
+  - LangChain Agent + 自定义工具（天气查询、知识库检索、记忆检索）。
   - 文档上传后执行三级滑动窗口分块，叶子分块向量化写入 Milvus，父级分块写入本地 DocStore。
-  - **用户记忆持久化**：通过 LLM 自动提取用户信息（姓名、学校、身份等），存储到 PostgreSQL PostgresStore，在后续对话中自动加载到系统提示词。
+  - **三层记忆架构**：PostgresSaver 短期会话记忆 + PostgresStore 用户画像 + Milvus 记忆向量库。
   - 会话记忆与摘要（PostgresSaver checkpointer），保持长对话上下文。
 - **运行形态**：FastAPI 后端 + 纯前端（Vue 3 CDN 单页）+ Milvus 向量库 + PostgreSQL。
 
 ## 关键创新点
 
-- **用户记忆持久化**：基于 LLM 自动提取用户信息（姓名、学校、身份、兴趣等），通过 PostgresStore 持久化到 PostgreSQL，在后续对话中自动加载到系统提示词，支持跨会话记忆。
+- **三层记忆架构**：短期记忆（PostgresSaver Checkpointer）+ 用户画像（PostgresStore）+ 记忆向量库（Milvus），兼顾上下文、结构和语义检索。
+- **自动摘要钩子**：`memory_summary_hook` 基于 `@after_model` 实现，每25轮自动提取对话摘要写入 Milvus，无需手动重建。
+- **用户记忆持久化**：基于 LLM 自动提取用户信息（姓名、学校、身份、兴趣等），通过 PostgresStore 持久化到 PostgreSQL，支持跨会话记忆。
 - **混合检索落地**：稠密向量 + BM25 稀疏向量，Milvus Hybrid Search + RRF 排序，兼顾语义与词匹配。
 - **Jina Rerank 接入**：Hybrid/Dense 召回后进行 API 级精排，支持返回 `rerank_score` 并在前端可视化。
 - **双向降级**：稀疏生成或 Hybrid 调用失败时自动降级为纯稠密检索，提升稳定性。
@@ -122,12 +124,10 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 - **文档处理链路**：上传 → 切分 → 稠密/稀疏向量同步生成 → Milvus 入库，支持重复上传自动清理旧 chunk。
 - **三级分块 + Auto-merging**：L1/L2/L3 三层滑窗切分；检索时优先召回 L3，满足阈值后自动合并到父块（L3->L2->L1）。
 - **Leaf-only 向量化存储**：仅叶子分块写入 Milvus，父块写入 DocStore，减少向量冗余并保留上下文聚合能力。
-- **工具可扩展**：天气查询示例 + 知识库检索，便于按需增添第三方 API 或企业数据源。
+- **工具可扩展**：天气查询示例 + 知识库检索 + 记忆检索，便于按需增添第三方 API 或企业数据源。
 - **RAG 过程可观测**：记录检索、评分、重写与来源信息，回答完成后前端可展开查看完整 RAG Trace。
 - **查询重写体系**：Step-Back 与 HyDE 两种扩展方式 + 路由选择，必要时触发重写检索。
 - **相关性评分门控**：基于结构化输出的 `grade_documents` 判断是否需要重写检索。
-- **记忆向量索引检索**：用户画像与对话摘要通过 Embedding 向量化存入 Milvus，检索时根据当前对话内容召回最相关的历史记忆，拼接到系统提示词，实现上下文感知的个性化记忆调用。
-- **定时 + API 双模式索引重建**：每日凌晨3点自动执行 in-place 清空重建；同步提供 `POST /api/memory/rebuild` 接口支持手动触发，确保记忆向量与 PostgresStore 数据保持同步。
 
 ## 未来迭代（Todo Lists）
 
@@ -169,6 +169,8 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 8. multi-agent：工具过多，把工具拆分给职责明确的专业化agent，提升工具选择的准确性和整体稳定性
 9. 历史记录会话名称可修改
 10. 死循环检测与恢复：\_is\_stuck + attempt\_loop\_recovery
+11. 记忆向量库按用户隔离（当前所有记忆共用 default thread_id）
+12. 记忆检索结果可视化：展示召回了哪些记忆片段
 
 ### 后端服务建设
 
@@ -178,13 +180,12 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 ## 目录与架构
 
 - 后端：`backend/`
-  - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载、定时记忆重建调度。
-  - [api.py](backend/api.py)：聊天、会话管理、文档管理、记忆重建接口。
+  - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载。
+  - [api.py](backend/api.py)：聊天、会话管理、文档管理接口。
   - [agent.py](backend/agent.py)：LangChain Agent、PostgresSaver checkpointer、PostgresStore 长期记忆。
-  - [middleware.py](backend/middleware.py)：`UserMemoryManager` 用户画像提取存储 + `MemorySummaryMiddleware` 对话摘要 + `system_prompt_middleware` 动态系统提示词。
-  - [memory\_vector\_store.py](backend/memory_vector_store.py)：Milvus user_memory collection 管理（创建、检索、清空重建）。
-  - [memory\_tasks.py](backend/memory_tasks.py)：记忆索引定时重建任务（每日凌晨 + API 手动触发）。
-  - [tools.py](backend/tools.py)：天气查询、知识库检索工具。
+  - [middleware.py](backend/middleware.py)：`UserMemoryManager` 用户画像提取 + `memory_summary_hook` 摘要钩子 + `system_prompt_middleware` 动态系统提示词。
+  - [memory\_vector\_store.py](backend/memory_vector_store.py)：Milvus user_memory collection 管理（创建、插入、检索）。
+  - [tools.py](backend/tools.py)：天气查询、知识库检索、记忆检索工具。
   - [rag\_pipeline.py](backend/rag_pipeline.py)：LangGraph RAG 工作流（检索→评分→重写→二次检索）。
   - [rag\_utils.py](backend/rag_utils.py)：检索、查询重写、HyDE 实现。
   - [embedding.py](backend/embedding.py)：稠密向量 API 调用 + BM25 稀疏向量生成。
@@ -263,12 +264,19 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 2. 前端可通过会话接口读取、删除历史对话。
 3. 当消息过长时触发摘要压缩（SummarizationMiddleware），保留长期上下文。
 
-### 5) 用户记忆链路
+### 5) 用户画像链路
 
 1. 用户每次发送消息时，后台异步调用 `extract_and_save_user_memory_async(user_text)`。
 2. LLM 从消息中提取结构化用户信息（姓名、学校、身份、兴趣等）。
 3. 通过 PostgresStore 持久化到 PostgreSQL，使用合并模式（只更新非空字段）。
-4. 下次对话时，`system_prompt_middleware` 中的 `load_user_memory_for_prompt()` 自动加载用户记忆并向量检索相关记忆，拼接到系统提示词。
+4. 下次对话时，`system_prompt_middleware` 自动加载用户画像拼接到系统提示词。
+
+### 6) 记忆摘要链路（Hook 自动化）
+
+1. `memory_summary_hook` 通过 `@after_model` 钩子实现，每轮对话后检查是否达到触发轮数（默认25轮）。
+2. 满足条件时，提取最近25轮对话内容，调用 LLM 生成摘要。
+3. 摘要文本生成稠密+稀疏向量，直接写入 Milvus user_memory collection。
+4. 后续对话可通过 `search_memory` 工具混合检索召回相关记忆。
 
 ## 记忆架构（Memory Architecture）
 
@@ -276,46 +284,100 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 
 ### 架构概览
 
+```mermaid
+graph TB
+    subgraph 第一层_短期记忆
+        A[用户消息] --> B[PostgresSaver Checkpointer]
+        B --> C[对话历史持久化]
+        C --> D[支持会话切换与恢复]
+    end
+
+    subgraph 第二层_用户画像
+        A --> E[extract_and_save_user_memory_async]
+        E --> F[LLM 提取结构化信息]
+        F --> G[PostgresStore 持久化]
+        G --> H[姓名/学校/身份/兴趣...]
+    end
+
+    subgraph 第三层_记忆向量库
+        A --> I[memory_summary_hook]
+        I --> J[每25轮触发摘要]
+        J --> K[LLM 总结对话要点]
+        K --> L[Embedding → Milvus]
+        A --> M[search_memory 工具]
+        M --> N[混合检索召回]
+        N --> O[相关记忆片段]
+    end
+
+    style 第一层_短期记忆 fill:#e1f5fe
+    style 第二层_用户画像 fill:#f3e5f5
+    style 第三层_记忆向量库 fill:#fff3e0
 ```
-用户消息
-   │
-   ├─── 1. 会话记忆（PostgresSaver Checkpointer）
-   │         └─ 持久化会话历史，支持会话切换与恢复
-   │
-   ├─── 2. 用户画像记忆（PostgresStore + Milvus 向量）
-   │         ├─ LLM 提取结构化信息（姓名、学校、身份、兴趣…）
-   │         ├─ 文本格式化后 Embedding → Milvus user_memory collection
-   │         └─ 检索时向量召回最相关画像片段
-   │
-   └─── 3. 对话摘要记忆（PostgresStore + Milvus 向量）
-             ├─ 每25轮自动总结对话要点
-             ├─ 摘要文本 Embedding → Milvus
-             └─ 定时重建任务批量同步历史摘要到向量库
+
+### 三层记忆详解
+
+#### 第一层：短期记忆（PostgresSaver Checkpointer）
+
+负责**即时会话上下文**，通过 `thread_id` 区分不同会话，自动持久化对话历史到 PostgreSQL。
+
+- 文件：`backend/agent.py`
+- 作用：保持长对话上下文，支持会话切换与恢复
+- 触发：每轮对话自动持久化
+
+#### 第二层：用户画像（PostgresStore）
+
+负责**结构化用户信息**，通过 LLM 从对话中自动提取，持久化到 PostgreSQL。
+
+- 文件：`backend/middleware.py` → `UserMemoryManager`
+- 提取内容：姓名、学校、身份、专业、年级、关系、兴趣、位置等
+- 特点：合并模式写入，只更新非空字段，保留已有信息
+
+```mermaid
+graph LR
+    A[用户消息] --> B{关键词检测}
+    B -->|命中| C[LLM 提取结构化信息]
+    B -->|未命中| D[跳过]
+    C --> E[PostgresStore 合并写入]
+    E --> F[namespace: user_memory/global]
+```
+
+#### 第三层：记忆向量库（Milvus + Hybrid RAG）
+
+负责**语义层面的记忆检索**，通过 `memory_summary_hook` 自动摘要对话，通过 `search_memory` 工具召回。
+
+- 文件：`backend/middleware.py` → `memory_summary_hook`
+- 触发条件：每 25 轮对话
+- 召回方式：`search_memory` 混合检索（稠密 + 稀疏 + RRF）
+
+```mermaid
+graph TB
+    A[触发条件满足<br/>user_turns % 25 == 0] --> B[提取最近25轮对话]
+    B --> C[LLM 总结对话要点]
+    C --> D[生成稠密向量]
+    C --> E[生成稀疏向量]
+    D --> F[Milvus 混合检索]
+    E --> F
+    G[search_memory 查询] --> H[Embedding]
+    H --> F
+    F --> I[RRF 排序]
+    I --> J[Top-K 相关记忆]
 ```
 
 ### 核心组件
 
 | 组件 | 文件 | 职责 |
 |------|------|------|
-| `MemoryVectorStore` | `memory_vector_store.py` | Milvus user_memory collection 的创建、插入、检索、清空重建 |
-| `UserMemoryManager` | `middleware.py` | LLM 提取用户信息 + PostgresStore 持久化 + 格式化系统提示词 |
-| `MemorySummaryMiddleware` | `middleware.py` | 每25轮自动总结对话，存入 PostgresStore |
-| `MemoryRebuildTask` | `memory_tasks.py` | 定时/手动触发全量向量索引重建 |
-| `system_prompt_middleware` | `middleware.py` | 动态拼接系统提示词：soul.md + 向量检索召回的相关记忆 |
+| `memory_summary_hook` | `middleware.py` | `@after_model` 钩子，每25轮自动摘要对话并写入 Milvus |
+| `UserMemoryManager` | `middleware.py` | LLM 提取用户信息 + PostgresStore 持久化 |
+| `MemoryVectorStore` | `memory_vector_store.py` | Milvus user_memory collection 管理（创建、插入、检索） |
+| `search_memory` | `tools.py` | 记忆检索工具，支持混合检索 + RRF 融合 |
+| `system_prompt_middleware` | `middleware.py` | 动态拼接系统提示词：soul.md + 用户画像 |
 
 ### 数据流
 
-1. **用户画像构建**：用户对话 → `should_extract_memory` 关键词过滤 → `extract_from_text` LLM 提取结构化信息 → `save_user_info` 合并写入 PostgresStore
-2. **向量索引写入**：PostgresStore 画像/摘要 → `MemoryRebuildTask.rebuild_index` → `EmbeddingService.get_embeddings` → `MemoryVectorStore.insert` → Milvus
-3. **记忆召回**：用户消息 → `EmbeddingService.get_embeddings` → `MemoryVectorStore.search` → Top-K 相关记忆 → 拼接到系统提示词
-
-### 记忆索引重建策略
-
-采用 **in-place 清空重建**（而非增量更新）：
-
-- 优点：实现简单、避免向量库冗余、无需管理版本
-- 触发方式：每日凌晨3点 `threading.Timer` 自动调度 / `POST /api/memory/rebuild` 手动调用
-- 流程：清空 collection → 从 PostgresStore 读取全部 profile + summaries → 重新向量化并插入
+1. **用户画像构建**：用户对话 → `should_extract_memory` 关键词过滤 → `extract_from_text` LLM 提取 → `save_user_info` 合并写入 PostgresStore
+2. **对话摘要写入**：每25轮 → `memory_summary_hook` 触发 → LLM 总结 → 稠密/稀疏向量 → Milvus
+3. **记忆召回**：用户消息 → `EmbeddingService.get_embeddings` → `MemoryVectorStore.hybrid_search` → Top-K 相关记忆 → 拼接到系统提示词
 
 ### 配置项
 
@@ -323,8 +385,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 |------|--------|------|
 | `MEMORY_COLLECTION_NAME` | `user_memory` | Milvus collection 名 |
 | `MEMORY_TOP_K` | `5` | 向量检索候选数 |
-| `MEMORY_RECALL_LIMIT` | `3` | 最终召回使用数 |
-| `MEMORY_REBUILD_HOUR` | `3` | 每日重建小时（凌晨） |
+| `TRIGGER_TURNS` | `25` | 摘要触发轮数 |
 
 ## 技术栈
 
@@ -344,7 +405,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
 - PostgreSQL：`POSTGRES_HOST`、`POSTGRES_PORT`、`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`
 - Auto-merging：`AUTO_MERGE_ENABLED`、`AUTO_MERGE_THRESHOLD`、`LEAF_RETRIEVE_LEVEL`
-- 记忆向量库：`MEMORY_COLLECTION_NAME`、`MEMORY_TOP_K`、`MEMORY_RECALL_LIMIT`、`MEMORY_REBUILD_HOUR`
+- 记忆向量库：`MEMORY_COLLECTION_NAME`、`MEMORY_TOP_K`、`TRIGGER_TURNS`
 - 工具：`AMAP_WEATHER_API`、`AMAP_API_KEY`
 
 ## API 速览
@@ -357,7 +418,6 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 - `GET /documents`：列出已入库文档及 chunk 数。
 - `POST /documents/upload`：上传并向量化 PDF/Word。
 - `DELETE /documents/{filename}`：删除指定文档的向量数据。
-- `POST /api/memory/rebuild`：手动触发记忆索引全量重建。
 
 ## 流式输出与 RAG Trace — 技术细节
 
