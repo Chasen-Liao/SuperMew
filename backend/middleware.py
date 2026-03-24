@@ -19,6 +19,12 @@ from embedding import EmbeddingService
 
 TRIGGER_TURNS = 25  # 每 25 轮触发一次摘要
 
+@dataclass
+class Context:
+    """Agent 运行时上下文 schema"""
+    user_id: str
+    thread_id: str
+
 
 # LLM 提取用的 Pydantic 模型
 class UserInfo(BaseModel):
@@ -278,7 +284,7 @@ def _save_summary_to_milvus(summary_text: str, thread_id: str, turn_count: int):
 
 
 @after_model
-def memory_summary_hook(state: AgentState, runtime: Runtime) -> dict | None:
+def memory_summary_hook(state: AgentState, runtime: Runtime[Context]) -> dict | None:
     """每 N 轮总结对话并写入 Milvus"""
     messages = state.get("messages", [])
     if not messages:
@@ -289,20 +295,14 @@ def memory_summary_hook(state: AgentState, runtime: Runtime) -> dict | None:
     if user_turns == 0 or user_turns % TRIGGER_TURNS != 0:
         return None
 
-    thread_id = "default"
-    print(f"[memory_summary_hook] 触发摘要")
+    thread_id = runtime.context.thread_id
+    print(f"[memory_summary_hook] 触发摘要 线程ID: {thread_id}")
 
     conversation_text = _format_conversation_for_summary(messages, TRIGGER_TURNS)
     summary_text = _summarize_conversation(conversation_text)
     _save_summary_to_milvus(summary_text, thread_id, user_turns)
 
     return None
-
-
-@dataclass
-class Context:
-    """Agent 运行时上下文 schema"""
-    user_id: str
 
 
 def _load_soul_prompt() -> str:

@@ -174,7 +174,7 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     result = agent.invoke(
         {"messages": messages},
         config=config,
-        context={"user_id": user_id},
+        context={"user_id": user_id, "thread_id": f"{user_id}_{session_id}"},
     )
 
     response_content = ""
@@ -264,7 +264,7 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
                 {"messages": messages},
                 config=config,
                 stream_mode=["messages", "updates"],
-                context={"user_id": user_id},
+                context={"user_id": user_id, "thread_id": f"{user_id}_{session_id}"},
             ):
                 if mode == "messages":
                     msg, metadata = data
