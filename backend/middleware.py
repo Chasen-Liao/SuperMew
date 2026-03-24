@@ -1,4 +1,5 @@
-from langchain.agents.middleware import before_model, AgentMiddleware, AgentState, dynamic_prompt, ModelRequest
+from langchain.agents.middleware import after_model, AgentMiddleware, AgentState, dynamic_prompt, ModelRequest
+from langgraph.runtime import Runtime
 from langchain_core.messages import HumanMessage, AIMessage
 from datetime import datetime
 from typing import Any, Optional
@@ -17,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from memory_vector_store import MemoryVectorStore
 from embedding import EmbeddingService
 
+TRIGGER_TURNS = 25  # 每 25 轮触发一次摘要
+
 
 # LLM 提取用的 Pydantic 模型
 class UserInfo(BaseModel):
@@ -34,6 +37,10 @@ class UserInfo(BaseModel):
 
 class UserMemoryManager:
     """用户记忆管理器：使用 LLM 提取并存储到 PostgresStore"""
+
+    """
+    Store 存储的是结构化的 UserInfo 模型
+    """
 
     _instance = None
     _conn_string = None
@@ -127,6 +134,7 @@ class UserMemoryManager:
 
                 store.put(namespace, "profile", merged)
                 print(f"[UserMemory] 已保存用户信息到 Store: {merged}")
+
             return True
         except Exception as e:
             print(f"[UserMemory] 保存失败: {e}")
@@ -143,34 +151,6 @@ class UserMemoryManager:
         except Exception as e:
             print(f"[UserMemory] 加载失败: {e}")
         return {}
-
-    def format_for_system_prompt(self) -> str:
-        """格式化用户信息为系统提示词字符串"""
-        info = self.load_user_info()
-        if not info:
-            return ""
-
-        lines = ["【用户记忆】"]
-        if "name" in info and info["name"]:
-            lines.append(f"- 名字：{info['name']}")
-        if "identity" in info and info["identity"]:
-            lines.append(f"- 身份：{info['identity']}")
-        if "school" in info and info["school"]:
-            lines.append(f"- 学校/公司：{info['school']}")
-        if "major" in info and info["major"]:
-            lines.append(f"- 专业/领域：{info['major']}")
-        if "grade" in info and info["grade"]:
-            lines.append(f"- 年级：{info['grade']}")
-        if "relationship" in info and info["relationship"]:
-            lines.append(f"- 重要关系：{info['relationship']}")
-        if "interest" in info and info["interest"]:
-            lines.append(f"- 兴趣爱好：{info['interest']}")
-        if "location" in info and info["location"]:
-            lines.append(f"- 所在地：{info['location']}")
-        if "other" in info and info["other"]:
-            lines.append(f"- 其他：{info['other']}")
-
-        return "\n".join(lines)
 
 
 # 全局单例
@@ -218,9 +198,109 @@ def extract_and_save_user_memory_async(user_text: str):
     threading.Thread(target=_run, daemon=True).start()
 
 
-def load_user_memory_for_prompt() -> str:
-    """加载用户记忆用于拼接到系统提示词"""
-    return user_memory_manager.format_for_system_prompt()
+def _format_conversation_for_summary(messages, last_n_turns: int = 25) -> str:
+    """将消息格式化为可读文本，只保留最近 N 轮用户对话"""
+    lines = []
+    user_msg_count = 0
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            if user_msg_count >= last_n_turns:
+                break
+            lines.append(f"用户: {msg.content}")
+            user_msg_count += 1
+        elif isinstance(msg, AIMessage):
+            lines.append(f"助手: {msg.content}")
+        elif isinstance(msg, dict):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            lines.append(f"{role}: {content}")
+    return "\n".join(reversed(lines))
+
+
+def _get_summary_model():
+    """获取用于总结的 LLM"""
+    from langchain.chat_models import init_chat_model
+    return init_chat_model(
+        model=MODEL,
+        model_provider="openai",
+        api_key=API_KEY,
+        base_url=BASE_URL,
+    )
+
+
+def _summarize_conversation(conversation_text: str) -> str:
+    """调用 LLM 总结对话"""
+    prompt = f"""请总结以下对话的要点，包括：
+1. 用户讨论的主题
+2. 用户的需求或问题
+3. 提供的帮助或解决方案
+4. 任何重要的上下文信息
+
+对话内容：
+{conversation_text}
+
+请用简洁的语言总结（不超过500字）："""
+
+    try:
+        llm = _get_summary_model()
+        response = llm.invoke(prompt)
+        return response.content if hasattr(response, 'content') else str(response)
+    except Exception as e:
+        print(f"[memory_summary_hook] 总结失败: {e}")
+        return ""
+
+
+def _save_summary_to_milvus(summary_text: str, thread_id: str, turn_count: int):
+    """将摘要写入 Milvus"""
+    if not summary_text:
+        return
+
+    try:
+        from datetime import datetime
+        timestamp = datetime.now().isoformat()
+        store = _get_memory_vector_store()
+        embedder = _get_embedding_service()
+
+        formatted_text = f"[对话摘要] {summary_text}（{turn_count}轮对话，{timestamp}）"
+        dense_vec = embedder.get_embeddings([formatted_text])[0]
+        sparse_vec = embedder.get_sparse_embedding(formatted_text)
+
+        store.insert([{
+            "memory_type": "summary",
+            "source_key": f"memory/{thread_id}/{turn_count}",
+            "text": formatted_text,
+            "created_at": timestamp,
+            "embedding": dense_vec,
+            "sparse_embedding": sparse_vec,
+        }])
+        print(f"[memory_summary_hook] 已写入 Milvus: {formatted_text[:50]}...")
+    except Exception as e:
+        print(f"[memory_summary_hook] 写入 Milvus 失败: {e}")
+
+
+@after_model
+def memory_summary_hook(state: AgentState, runtime: Runtime) -> dict | None:
+    """每 N 轮总结对话并写入 Milvus"""
+    messages = state.get("messages", [])
+    if not messages:
+        return None
+
+    thread_id = "default"
+    if runtime.run_config and runtime.run_config.get("configurable"):
+        thread_id = runtime.run_config["configurable"].get("thread_id", "default")
+
+    user_turns = sum(1 for msg in messages if isinstance(msg, HumanMessage))
+
+    if user_turns == 0 or user_turns % TRIGGER_TURNS != 0:
+        return None
+
+    print(f"[memory_summary_hook] 触发摘要 thread={thread_id} user_turns={user_turns}")
+
+    conversation_text = _format_conversation_for_summary(messages, TRIGGER_TURNS)
+    summary_text = _summarize_conversation(conversation_text)
+    _save_summary_to_milvus(summary_text, thread_id, user_turns)
+
+    return None
 
 
 class MemorySummaryMiddleware(AgentMiddleware):
@@ -249,9 +329,10 @@ class MemorySummaryMiddleware(AgentMiddleware):
             self._initialized = True
         return self._summary_model
 
-    @before_model
+    @after_model    
     def __call__(self, state: AgentState, config: dict) -> Optional[Command]:
-        """在模型调用前执行，检查是否需要总结记忆"""
+        """在模型调用后执行，检查是否需要总结记忆"""
+        print("[MemorySummary] __call__ triggered")
         messages = state.get("messages", [])
         if not messages:
             return None
@@ -270,13 +351,15 @@ class MemorySummaryMiddleware(AgentMiddleware):
         if user_turns > current_count:
             self._turn_counts[thread_id] = user_turns
 
+        print(f"[MemorySummary] thread={thread_id} user_turns={user_turns} current_count={current_count} trigger={self._trigger_turns}")
+
         if user_turns > 0 and user_turns % self._trigger_turns == 0:
             return self._summarize_and_store(messages, thread_id, config)
 
         return None
 
     def _summarize_and_store(self, messages, thread_id: str, config: dict) -> Optional[Command]:
-        """总结对话并存储到 Store"""
+        """总结对话并存储到 Store，同时实时写入 Milvus"""
         from langgraph.store.postgres import PostgresStore
 
         # 开始总结
@@ -293,7 +376,7 @@ class MemorySummaryMiddleware(AgentMiddleware):
 对话内容：
 {conversation_text}
 
-请用简洁的语言总结（不超过200字）："""
+请用简洁的语言总结（不超过500字）："""
 
         try:
             summary_response = self.summary_model.invoke(summary_prompt)
@@ -303,6 +386,8 @@ class MemorySummaryMiddleware(AgentMiddleware):
             return None
 
         conn_string = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+        timestamp = datetime.now().isoformat()
+        summary_key = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         try:
             with PostgresStore.from_conn_string(conn_string) as store:
@@ -310,11 +395,10 @@ class MemorySummaryMiddleware(AgentMiddleware):
 
                 # 命名空间 为 (memory, thread_id) 区分不同的线程记忆
                 namespace = ("memory", thread_id)
-                summary_key = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
                 store.put(namespace, summary_key, {
                     "summary": summary_text,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": timestamp,
                     "turn_count": self._turn_counts.get(thread_id, 0),
                     "conversation_text": conversation_text[:1000] if len(conversation_text) > 1000 else conversation_text,
                 })
@@ -322,6 +406,25 @@ class MemorySummaryMiddleware(AgentMiddleware):
                 print(f"[MemorySummary] 已保存总结到 Store: {namespace}/{summary_key}")
         except Exception as e:
             print(f"[MemorySummary] 存储失败: {e}")
+
+        # 实时写入 Milvus（一段完整摘要文本为 1 条向量，稠密+稀疏双索引）
+        try:
+            store = _get_memory_vector_store()
+            embedder = _get_embedding_service()
+            formatted_text = f"[对话摘要] {summary_text}（{self._turn_counts.get(thread_id, 0)}轮对话，{timestamp}）"
+            dense_vec = embedder.get_embeddings([formatted_text])[0]
+            sparse_vec = embedder.get_sparse_embedding(formatted_text)
+            store.insert([{
+                "memory_type": "summary",
+                "source_key": f"memory/{thread_id}/{summary_key}",
+                "text": formatted_text,
+                "created_at": timestamp,
+                "embedding": dense_vec,
+                "sparse_embedding": sparse_vec,
+            }])
+            print(f"[MemorySummary] 已写入摘要到 Milvus: {formatted_text[:50]}...")
+        except Exception as e:
+            print(f"[MemorySummary] 写入 Milvus 失败: {e}")
 
         return None
 
@@ -340,7 +443,9 @@ class MemorySummaryMiddleware(AgentMiddleware):
         return "\n".join(lines[-50:])
 
 # 测试一下记忆总结中间件，每2轮对话总结一次，后面改为每25轮总结一次
-memory_summary_middleware = MemorySummaryMiddleware(trigger_turns=25)
+print("[Middleware] MemorySummaryMiddleware instantiated")
+memory_summary_middleware = MemorySummaryMiddleware(trigger_turns=2)
+print(f"[Middleware] memory_summary_middleware = {memory_summary_middleware}")
 
 
 @dataclass
@@ -363,7 +468,8 @@ def _get_memory_vector_store():
     global _memory_vector_store
     if _memory_vector_store is None:
         _memory_vector_store = MemoryVectorStore()
-        _memory_vector_store.init_collection()
+    # 确保 collection 存在（删除后可重建）
+    _memory_vector_store.init_collection()
     return _memory_vector_store
 
 
@@ -374,57 +480,43 @@ def _get_embedding_service():
     return _embedding_service_for_memory
 
 
+def _load_profile_for_prompt() -> str:
+    """从 Store 加载用户画像，拼接到系统提示词"""
+    info = user_memory_manager.load_user_info()
+    if not info:
+        return ""
+
+    lines = ["【用户档案】"]
+    if info.get("name"):
+        lines.append(f"- 名字：{info['name']}")
+    if info.get("identity"):
+        lines.append(f"- 身份：{info['identity']}")
+    if info.get("school"):
+        lines.append(f"- 学校/公司：{info['school']}")
+    if info.get("major"):
+        lines.append(f"- 专业/领域：{info['major']}")
+    if info.get("grade"):
+        lines.append(f"- 年级：{info['grade']}")
+    if info.get("relationship"):
+        lines.append(f"- 重要关系：{info['relationship']}")
+    if info.get("interest"):
+        lines.append(f"- 兴趣爱好：{info['interest']}")
+    if info.get("location"):
+        lines.append(f"- 所在地：{info['location']}")
+    # if info.get("other"):
+    # 这里去检索
+    #     lines.append(f"- 其他信息：{info['other']}")
+
+    return "\n".join(lines)
+
+
 @dynamic_prompt
 def system_prompt_middleware(request: ModelRequest) -> str:
-    """动态生成系统提示词：soul.md + 检索到的相关记忆"""
-    from config import MEMORY_TOP_K, MEMORY_RECALL_LIMIT
-
+    """动态生成系统提示词：soul.md + 用户档案（来自 PostgresStore）"""
     soul_prompt = _load_soul_prompt()
-    memory_text = load_user_memory_for_prompt()
+    profile_text = _load_profile_for_prompt()
 
-    if not memory_text:
+    if not profile_text:
         return soul_prompt
 
-    try:
-        store = _get_memory_vector_store()
-        embedder = _get_embedding_service()
-
-        # 从 request 中提取用户消息作为查询
-        user_message = ""
-        if hasattr(request, "prompt") and request.prompt:
-            user_message = request.prompt
-        elif hasattr(request, "messages") and request.messages:
-            for msg in reversed(request.messages):
-                if hasattr(msg, "type") and msg.type == "human":
-                    user_message = getattr(msg, "content", "")
-                    break
-
-        if not user_message:
-            return f"{soul_prompt}\n\n{memory_text}"
-
-        # 向量检索
-        query_vec = embedder.get_embeddings([user_message])[0]
-        candidates = store.search(query_vec, top_k=MEMORY_TOP_K)
-
-        if candidates:
-            top_memories = candidates[:MEMORY_RECALL_LIMIT]
-            memory_lines = []
-            for m in top_memories:
-                mem_type = m.get("memory_type", "")
-                text = m.get("text", "")
-                if text:
-                    memory_lines.append(f"[{mem_type}] {text}")
-
-            if memory_lines:
-                combined = "\n".join(memory_lines)
-                # 简单 token 估算：500 tokens ≈ 2000 字符
-                if len(combined) > 2000:
-                    combined = combined[:2000]
-                return f"{soul_prompt}\n\n【相关记忆】\n{combined}"
-
-        # Milvus 无数据或检索失败，降级回退
-        return f"{soul_prompt}\n\n{memory_text}"
-
-    except Exception as e:
-        print(f"[system_prompt_middleware] 记忆检索失败，降级回退: {e}")
-        return f"{soul_prompt}\n\n{memory_text}"
+    return f"{soul_prompt}\n\n{profile_text}"
