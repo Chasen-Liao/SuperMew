@@ -12,11 +12,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
-from middleware import memory_summary_middleware, extract_and_save_user_memory_async, load_user_memory_for_prompt, system_prompt_middleware, Context
+from middleware import memory_summary_hook, extract_and_save_user_memory_async, system_prompt_middleware, Context
 from langchain_core.messages import AIMessageChunk
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.store.postgres import PostgresStore
-from tools import get_current_weather, search_knowledge_base, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
+from tools import get_current_weather, search_knowledge_base, search_memory, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
 from datetime import datetime
 from config import API_KEY, MODEL, BASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
 
@@ -130,7 +130,7 @@ def create_agent_instance():
 
     agent = create_agent(
         model=model,
-        tools=[get_current_weather, search_knowledge_base],
+        tools=[get_current_weather, search_knowledge_base, search_memory],
         checkpointer=checkpointer,
         store=store,
         context_schema=Context,
@@ -140,7 +140,7 @@ def create_agent_instance():
                 trigger=("tokens", 8000),
                 keep=("messages", 12),
             ),
-            memory_summary_middleware,
+            memory_summary_hook,
             system_prompt_middleware,
         ],
     )
