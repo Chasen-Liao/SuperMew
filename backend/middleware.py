@@ -1,9 +1,8 @@
-from langchain.agents.middleware import after_model, AgentMiddleware, AgentState, dynamic_prompt, ModelRequest
+from langchain.agents.middleware import after_model, AgentState, dynamic_prompt, ModelRequest
 from langgraph.runtime import Runtime
 from langchain_core.messages import HumanMessage, AIMessage
 from datetime import datetime
 from typing import Any, Optional
-from langgraph.types import Command
 from langgraph.store.postgres import PostgresStore
 from pydantic import BaseModel, Field
 from config import MODEL, BASE_URL, API_KEY, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
@@ -18,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from memory_vector_store import MemoryVectorStore
 from embedding import EmbeddingService
 
-TRIGGER_TURNS = 25  # 每 25 轮触发一次摘要
+TRIGGER_TURNS = 2  # 每 25 轮触发一次摘要
 
 
 # LLM 提取用的 Pydantic 模型
@@ -301,151 +300,6 @@ def memory_summary_hook(state: AgentState, runtime: Runtime) -> dict | None:
     _save_summary_to_milvus(summary_text, thread_id, user_turns)
 
     return None
-
-
-class MemorySummaryMiddleware(AgentMiddleware):
-    """记忆总结中间件
-
-    每隔指定轮次（默认25轮），对对话历史进行总结，
-    并将总结存入 Store（长期记忆）。
-    """
-
-    def __init__(self, trigger_turns: int = 25):
-        self._summary_model = None
-        self._initialized = False
-        self._turn_counts = {}  # thread_id -> turn_count
-        self._trigger_turns = trigger_turns
-
-    @property
-    def summary_model(self):
-        if not self._initialized:
-            from langchain.chat_models import init_chat_model
-            self._summary_model = init_chat_model(
-                model=MODEL,
-                model_provider="openai",
-                api_key=API_KEY,
-                base_url=BASE_URL,
-            )
-            self._initialized = True
-        return self._summary_model
-
-    @after_model    
-    def __call__(self, state: AgentState, config: dict) -> Optional[Command]:
-        """在模型调用后执行，检查是否需要总结记忆"""
-        print("[MemorySummary] __call__ triggered")
-        messages = state.get("messages", [])
-        if not messages:
-            return None
-
-        thread_id = config.get("configurable", {}).get("thread_id", "default")
-
-        user_turns = sum(
-            1 for msg in messages
-            if isinstance(msg, (HumanMessage, dict)) and
-            (isinstance(msg, dict) and msg.get("role") == "user" or
-             isinstance(msg, HumanMessage) and msg.type == "human")
-        )
-
-        current_count = self._turn_counts.get(thread_id, 0)
-
-        if user_turns > current_count:
-            self._turn_counts[thread_id] = user_turns
-
-        print(f"[MemorySummary] thread={thread_id} user_turns={user_turns} current_count={current_count} trigger={self._trigger_turns}")
-
-        if user_turns > 0 and user_turns % self._trigger_turns == 0:
-            return self._summarize_and_store(messages, thread_id, config)
-
-        return None
-
-    def _summarize_and_store(self, messages, thread_id: str, config: dict) -> Optional[Command]:
-        """总结对话并存储到 Store，同时实时写入 Milvus"""
-        from langgraph.store.postgres import PostgresStore
-
-        # 开始总结
-        print(f"[MemorySummary] 开始总结线程 {thread_id} 的记忆")
-
-        conversation_text = self._format_conversation(messages)
-
-        summary_prompt = f"""请总结以下对话的要点，包括：
-1. 用户讨论的主题
-2. 用户的需求或问题
-3. 提供的帮助或解决方案
-4. 任何重要的上下文信息
-
-对话内容：
-{conversation_text}
-
-请用简洁的语言总结（不超过500字）："""
-
-        try:
-            summary_response = self.summary_model.invoke(summary_prompt)
-            summary_text = summary_response.content if hasattr(summary_response, 'content') else str(summary_response)
-        except Exception as e:
-            print(f"[MemorySummary] 总结失败: {e}")
-            return None
-
-        conn_string = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-        timestamp = datetime.now().isoformat()
-        summary_key = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-        try:
-            with PostgresStore.from_conn_string(conn_string) as store:
-                store.setup()
-
-                # 命名空间 为 (memory, thread_id) 区分不同的线程记忆
-                namespace = ("memory", thread_id)
-
-                store.put(namespace, summary_key, {
-                    "summary": summary_text,
-                    "timestamp": timestamp,
-                    "turn_count": self._turn_counts.get(thread_id, 0),
-                    "conversation_text": conversation_text[:1000] if len(conversation_text) > 1000 else conversation_text,
-                })
-
-                print(f"[MemorySummary] 已保存总结到 Store: {namespace}/{summary_key}")
-        except Exception as e:
-            print(f"[MemorySummary] 存储失败: {e}")
-
-        # 实时写入 Milvus（一段完整摘要文本为 1 条向量，稠密+稀疏双索引）
-        try:
-            store = _get_memory_vector_store()
-            embedder = _get_embedding_service()
-            formatted_text = f"[对话摘要] {summary_text}（{self._turn_counts.get(thread_id, 0)}轮对话，{timestamp}）"
-            dense_vec = embedder.get_embeddings([formatted_text])[0]
-            sparse_vec = embedder.get_sparse_embedding(formatted_text)
-            store.insert([{
-                "memory_type": "summary",
-                "source_key": f"memory/{thread_id}/{summary_key}",
-                "text": formatted_text,
-                "created_at": timestamp,
-                "embedding": dense_vec,
-                "sparse_embedding": sparse_vec,
-            }])
-            print(f"[MemorySummary] 已写入摘要到 Milvus: {formatted_text[:50]}...")
-        except Exception as e:
-            print(f"[MemorySummary] 写入 Milvus 失败: {e}")
-
-        return None
-
-    def _format_conversation(self, messages) -> str:
-        """将消息格式化为可读文本"""
-        lines = []
-        for msg in messages:
-            if isinstance(msg, HumanMessage):
-                lines.append(f"用户: {msg.content}")
-            elif isinstance(msg, AIMessage):
-                lines.append(f"助手: {msg.content}")
-            elif isinstance(msg, dict):
-                role = msg.get("role", "unknown")
-                content = msg.get("content", "")
-                lines.append(f"{role}: {content}")
-        return "\n".join(lines[-50:])
-
-# 测试一下记忆总结中间件，每2轮对话总结一次，后面改为每25轮总结一次
-print("[Middleware] MemorySummaryMiddleware instantiated")
-memory_summary_middleware = MemorySummaryMiddleware(trigger_turns=2)
-print(f"[Middleware] memory_summary_middleware = {memory_summary_middleware}")
 
 
 @dataclass
