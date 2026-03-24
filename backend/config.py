@@ -48,3 +48,10 @@ POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5433"))
 POSTGRES_USER = os.getenv("POSTGRES_USER", "supermew")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "supermew123")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "supermew")
+
+# ===== 记忆向量库配置 =====
+MEMORY_COLLECTION_NAME = os.getenv("MEMORY_COLLECTION_NAME", "user_memory")
+MEMORY_TOP_K = 5           # 向量库检索候选数
+MEMORY_RECALL_LIMIT = 3    # 最终召回使用数
+MEMORY_TOKEN_LIMIT = 500   # 记忆文本 token 上限
+MEMORY_REBUILD_HOUR = 3    # 每天凌晨 3 点重建
