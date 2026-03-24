@@ -9,6 +9,13 @@ from config import MODEL, BASE_URL, API_KEY, POSTGRES_HOST, POSTGRES_PORT, POSTG
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import sys
+
+# Add backend to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
+
+from memory_vector_store import MemoryVectorStore
+from embedding import EmbeddingService
 
 
 # LLM 提取用的 Pydantic 模型
@@ -348,11 +355,76 @@ def _load_soul_prompt() -> str:
     return soul_path.read_text(encoding="utf-8")
 
 
+_memory_vector_store = None
+_embedding_service_for_memory = None
+
+
+def _get_memory_vector_store():
+    global _memory_vector_store
+    if _memory_vector_store is None:
+        _memory_vector_store = MemoryVectorStore()
+        _memory_vector_store.init_collection()
+    return _memory_vector_store
+
+
+def _get_embedding_service():
+    global _embedding_service_for_memory
+    if _embedding_service_for_memory is None:
+        _embedding_service_for_memory = EmbeddingService()
+    return _embedding_service_for_memory
+
+
 @dynamic_prompt
 def system_prompt_middleware(request: ModelRequest) -> str:
-    """动态生成系统提示词：soul.md + 用户记忆"""
+    """动态生成系统提示词：soul.md + 检索到的相关记忆"""
+    from config import MEMORY_TOP_K, MEMORY_RECALL_LIMIT
+
     soul_prompt = _load_soul_prompt()
-    memory = load_user_memory_for_prompt()
-    if memory:
-        return f"{soul_prompt}\n\n{memory}"
-    return soul_prompt
+    memory_text = load_user_memory_for_prompt()
+
+    if not memory_text:
+        return soul_prompt
+
+    try:
+        store = _get_memory_vector_store()
+        embedder = _get_embedding_service()
+
+        # 从 request 中提取用户消息作为查询
+        user_message = ""
+        if hasattr(request, "prompt") and request.prompt:
+            user_message = request.prompt
+        elif hasattr(request, "messages") and request.messages:
+            for msg in reversed(request.messages):
+                if hasattr(msg, "type") and msg.type == "human":
+                    user_message = getattr(msg, "content", "")
+                    break
+
+        if not user_message:
+            return f"{soul_prompt}\n\n{memory_text}"
+
+        # 向量检索
+        query_vec = embedder.get_embeddings([user_message])[0]
+        candidates = store.search(query_vec, top_k=MEMORY_TOP_K)
+
+        if candidates:
+            top_memories = candidates[:MEMORY_RECALL_LIMIT]
+            memory_lines = []
+            for m in top_memories:
+                mem_type = m.get("memory_type", "")
+                text = m.get("text", "")
+                if text:
+                    memory_lines.append(f"[{mem_type}] {text}")
+
+            if memory_lines:
+                combined = "\n".join(memory_lines)
+                # 简单 token 估算：500 tokens ≈ 2000 字符
+                if len(combined) > 2000:
+                    combined = combined[:2000]
+                return f"{soul_prompt}\n\n【相关记忆】\n{combined}"
+
+        # Milvus 无数据或检索失败，降级回退
+        return f"{soul_prompt}\n\n{memory_text}"
+
+    except Exception as e:
+        print(f"[system_prompt_middleware] 记忆检索失败，降级回退: {e}")
+        return f"{soul_prompt}\n\n{memory_text}"
