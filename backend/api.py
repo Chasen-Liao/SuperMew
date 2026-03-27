@@ -70,22 +70,21 @@ async def get_session_messages_endpoint(user_id: str, session_id: str):
 async def list_sessions(user_id: str):
     """获取用户的所有会话列表"""
     try:
-        data = storage._load()
-        if user_id not in data:
+        session_list = storage.list_sessions(user_id)
+        if not session_list:
             return SessionListResponse(sessions=[])
 
         sessions = []
-        for session_id, session_data in data[user_id].items():
+        for item in session_list:
+            session_id = item["session_id"]
             # 从 checkpointer 获取消息数量
             messages = get_session_messages(user_id, session_id)
             sessions.append(SessionInfo(
                 session_id=session_id,
-                updated_at=session_data.get("updated_at", ""),
+                updated_at=item["updated_at"],
                 message_count=len(messages)
             ))
 
-        # 按更新时间倒序排列
-        sessions.sort(key=lambda x: x.updated_at, reverse=True)
         return SessionListResponse(sessions=sessions)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
