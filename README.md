@@ -589,6 +589,11 @@ StreamingResponse(
 
 ## 更新日志
 
+### 2026-03-27 会话列表数据库落地
+
+- **ConversationStorage 迁移**：会话列表元数据从 `customer_service_history.json` 迁移到 PostgreSQL `conversations` 表，提升并发访问稳定性。
+- **新增迁移脚本**：`backend/migrate_sessions_to_pg.py` 用于一次性迁移历史数据。
+
 ### 2026-03-22 用户记忆持久化 + RAG 实时显示优化
 
 - **新增用户记忆功能**：通过 `middleware.py` 中的 `UserMemoryManager`，使用 LLM 自动从对话中提取用户信息（姓名、学校、身份、兴趣等），通过 PostgresStore 持久化到 PostgreSQL。下次对话时自动加载到系统提示词。

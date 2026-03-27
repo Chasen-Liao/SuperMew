@@ -5,9 +5,7 @@ import asyncio
 import queue
 import threading
 from pathlib import Path
-
-# 确保 backend 目录在 sys.path 中
-sys.path.insert(0, str(Path(__file__).parent))
+import psycopg
 
 from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
@@ -23,7 +21,6 @@ from config import API_KEY, MODEL, BASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTG
 
 def create_checkpointer():
     """创建 PostgresSaver checkpointer"""
-    import psycopg
     conn = psycopg.connect(
         f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}",
         autocommit=True,
@@ -51,62 +48,64 @@ class ConversationStorage:
     用于 API 的会话列表查询和删除功能。
     """
 
-    def __init__(self, storage_file: str = None):
-        if storage_file:
-            storage_path = os.path.abspath(storage_file)
-        else:
-            package_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-            data_dir = os.path.join(package_root, "data")
-            os.makedirs(data_dir, exist_ok=True)
-            storage_path = os.path.join(data_dir, "customer_service_history.json")
+    def __init__(self):
+        self._conn = psycopg.connect(
+            host=POSTGRES_HOST,
+            port=POSTGRES_PORT,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD,
+            dbname=POSTGRES_DB,
+            autocommit=True,
+            prepare_threshold=0,
+            row_factory=psycopg.rows.dict_row
+        )
 
-        self.storage_file = storage_path
+    def _ensure_table(self):
+        """确保表存在"""
+        with self._conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id SERIAL PRIMARY KEY,
+                    user_id VARCHAR(255) NOT NULL,
+                    session_id VARCHAR(255) NOT NULL,
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    UNIQUE(user_id, session_id)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversations_user_id
+                ON conversations(user_id)
+            """)
 
     def touch_session(self, user_id: str, session_id: str):
         """更新会话的最后访问时间（checkpointer 会在首次对话时自动创建会话）"""
-        data = self._load()
-
-        if user_id not in data:
-            data[user_id] = {}
-
-        if session_id not in data[user_id]:
-            data[user_id][session_id] = {"updated_at": datetime.now().isoformat()}
-        else:
-            data[user_id][session_id]["updated_at"] = datetime.now().isoformat()
-
-        with open(self.storage_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with self._conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO conversations (user_id, session_id, updated_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, session_id)
+                DO UPDATE SET updated_at = EXCLUDED.updated_at
+            """, (user_id, session_id, datetime.now()))
 
     def list_sessions(self, user_id: str) -> list:
-        """列出用户的所有会话"""
-        data = self._load()
-        if user_id not in data:
-            return []
-        return list(data[user_id].keys())
+        """列出用户的所有会话，返回 session_id 和 updated_at 列表"""
+        with self._conn.cursor() as cur:
+            cur.execute("""
+                SELECT session_id, updated_at FROM conversations
+                WHERE user_id = %s
+                ORDER BY updated_at DESC
+            """, (user_id,))
+            return [{"session_id": row["session_id"], "updated_at": row["updated_at"].isoformat()} for row in cur.fetchall()]
 
     def delete_session(self, user_id: str, session_id: str) -> bool:
         """删除指定用户的会话，返回是否删除成功"""
-        data = self._load()
-        if user_id not in data or session_id not in data[user_id]:
-            return False
-
-        del data[user_id][session_id]
-        if not data[user_id]:
-            del data[user_id]
-
-        with open(self.storage_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        return True
-
-    def _load(self) -> dict:
-        """加载数据"""
-        if not os.path.exists(self.storage_file):
-            return {}
-        try:
-            with open(self.storage_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        with self._conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM conversations
+                WHERE user_id = %s AND session_id = %s
+            """, (user_id, session_id))
+            return cur.rowcount > 0
 
 
 
@@ -150,6 +149,7 @@ def create_agent_instance():
 agent, model = create_agent_instance()#
 
 storage = ConversationStorage()
+storage._ensure_table()
 
 
 def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
