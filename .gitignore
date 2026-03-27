@@ -23,3 +23,5 @@ data/
 .playwright-mcp/
 
 CLAUDE.md.idea/
+
+.idea
