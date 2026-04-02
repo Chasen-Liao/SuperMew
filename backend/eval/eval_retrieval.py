@@ -5,13 +5,14 @@ import csv
 from pathlib import Path
 from datetime import datetime
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# backend/ 是 eval/ 的父目录，需要将其加入 path 以便导入 embedding 等模块
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval_config import (
+from eval.eval_config import (
     DATASET_PATH, EVAL_COLLECTION, PARENT_CHUNK_STORE_PATH,
     TOP_K, OVERLAP_THRESHOLD, RESULTS_DIR
 )
-from eval_utils import evaluate_single_query, aggregate_metrics
+from eval.eval_utils import evaluate_single_query, aggregate_metrics
 from rag_utils import retrieve_documents, _rerank_documents, _auto_merge_documents
 from milvus_client import MilvusManager
 from config import LEAF_RETRIEVE_LEVEL

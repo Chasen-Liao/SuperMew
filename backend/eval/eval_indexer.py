@@ -3,9 +3,10 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# backend/ 是 eval/ 的父目录，需要将其加入 path 以便导入 embedding 等模块
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval_config import (
+from eval.eval_config import (
     DATASET_PATH, EVAL_COLLECTION, PARENT_CHUNK_STORE_PATH,
     CHUNK_SIZE, CHUNK_OVERLAP, OVERLAP_THRESHOLD, RESULTS_DIR
 )
