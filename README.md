@@ -129,6 +129,63 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 - **查询重写体系**：Step-Back 与 HyDE 两种扩展方式 + 路由选择，必要时触发重写检索。
 - **相关性评分门控**：基于结构化输出的 `grade_documents` 判断是否需要重写检索。
 
+## RAG 检索评测
+
+本项目使用 CMRC 2018（阅读理解）和 CMRC 2019（填空题）公开数据集对检索模块进行消融评测。
+
+### 评测配置
+
+- **检索流程**：Hybrid Search（Dense + BM25）→ RRF(k=60) 融合 → Cross-Encoder 精排 → Auto-merge → Top-5
+- **分块策略**：L1(2400) → L2(1024) → L3(512) 三层滑动窗口
+- **Ground Truth**：Chunk 与答案 3-gram 重叠度 ≥ 30%
+
+### 评测结果
+
+#### CMRC 2018 阅读理解（n=87）
+
+| 实验 | P@5 | R@5 | MRR | NDCG@5 |
+|------|------|------|------|--------|
+| Baseline | 0.2023 | 0.3343 | 0.5565 | 0.3143 |
+| No Rerank | 0.2023 | 0.3343 | 0.5571 | 0.3145 |
+| No Auto-merge | 0.2023 | 0.3343 | **0.5707** | **0.3189** |
+
+#### CMRC 2019 填空题（n=51）
+
+| 实验 | P@5 | R@5 | MRR | NDCG@5 |
+|------|------|------|------|--------|
+| Baseline | 0.2510 | 0.3693 | **0.9314** | **0.4899** |
+| No Rerank | 0.2510 | 0.3693 | 0.9314 | 0.4899 |
+| No Auto-merge | 0.2510 | 0.3693 | 0.8039 | 0.4458 |
+
+### 关键发现
+
+| 发现 | 说明 |
+|------|------|
+| **Rerank 无效** | RRF(k=60) 融合已足够好，Cross-Encoder 未带来额外提升 |
+| **Auto-merge 对填空题有正向作用** | CMRC 2019 禁用后 MRR 下降 13.7%，填空题受益于上下文扩展 |
+| **任务类型影响显著** | 填空题 MRR 高达 0.93，阅读理解仅 0.56，真实阅读理解检索难度更大 |
+
+### 评测文件
+
+- `backend/eval/eval_indexer_cmrc2018.py` / `backend/eval/eval_retrieval_cmrc2018.py` — CMRC 2018 独立评测脚本
+- `backend/eval/eval_indexer_cmrc2019.py` / `backend/eval/eval_retrieval_cmrc2019.py` — CMRC 2019 独立评测脚本
+- `eval_results/report-2026-04-03.md` — 完整评测报告
+
+### 下一阶段目标：引入 HyDE 检索
+
+**目标**：在现有检索流程中引入 HyDE（Hypothetical Document Embedding），观察各项评测指标的变化。
+
+**HyDE 原理**：不直接用原始 query 检索，而是先让 LLM 根据 query 生成一个"假设性答案文档"，再用该文档的 embedding 去检索。期望通过生成文档的稠密向量获得更好的语义匹配。
+
+**预期改进方向**：
+- 阅读理解类任务（CMRC 2018）query 与 context 语义差异大，HyDE 生成的假设文档可能弥合这一 gap
+- 填空题（CMRC 2019）query=context 已高度相关，HyDE 效果可能有限
+
+**待验证假设**：
+1. HyDE 是否能提升阅读理解的 MRR / NDCG@5
+2. HyDE 生成质量对检索效果的影响程度
+3. HyDE 与现有 Step-Back 重写的协同效果
+
 ## 未来迭代（Todo Lists）
 
 ### RAG部分
