@@ -155,6 +155,9 @@ def build_ground_truth(records: list[dict], threshold: float = 0.3) -> dict:
     """
     为每条 record 构建 question_id → relevant_chunk_ids 映射。
     chunk 为 relevant 当且仅当其 text 与任意 answer 的重叠度 >= threshold。
+    支持两种数据格式：
+    1. 标准格式：answers 是文本列表
+    2. CMRC 2019 格式：answers 是整数列表（choices 的索引）
     """
     from collections import defaultdict
 
@@ -162,7 +165,8 @@ def build_ground_truth(records: list[dict], threshold: float = 0.3) -> dict:
 
     # 第一步：分块
     for record in records:
-        qid = record.get("question_id", record.get("id", ""))
+        # 支持多种字段名
+        qid = record.get("question_id", record.get("id", record.get("context_id", "")))
         context = record.get("context", "")
 
         chunks = build_chunks_from_context(
@@ -175,16 +179,25 @@ def build_ground_truth(records: list[dict], threshold: float = 0.3) -> dict:
     # 第二步：判断相关
     gt_map = defaultdict(set)
     for record in records:
-        qid = record.get("question_id", record.get("id", ""))
+        qid = record.get("question_id", record.get("id", record.get("context_id", "")))
         answers = record.get("answers", [])
-        if isinstance(answers, str):
-            answers = [answers]
+        choices = record.get("choices", [])
+
+        # CMRC 2019: answers 是整数索引，需转成选项文本
+        answer_texts = []
+        for ans in answers:
+            if isinstance(ans, int) and choices:
+                # 整数索引 → 取 choices 对应文本
+                if 0 <= ans < len(choices):
+                    answer_texts.append(choices[ans])
+            elif isinstance(ans, str):
+                answer_texts.append(ans)
 
         for chunk_id, chunk_text in all_chunks.items():
             if not chunk_id.startswith(f"{qid}::"):
                 continue
-            for answer in answers:
-                if compute_answer_overlap(chunk_text, answer, threshold):
+            for answer_text in answer_texts:
+                if compute_answer_overlap(chunk_text, answer_text, threshold):
                     gt_map[qid].add(chunk_id)
                     break
 
@@ -209,7 +222,7 @@ def run_indexer():
     # 收集所有 chunks
     all_chunks = []
     for record in records:
-        qid = record.get("question_id", record.get("id", ""))
+        qid = record.get("question_id", record.get("id", record.get("context_id", "")))
         context = record.get("context", "")
         chunks = build_chunks_from_context(context, qid, CHUNK_SIZE, CHUNK_OVERLAP)
         all_chunks.extend(chunks)

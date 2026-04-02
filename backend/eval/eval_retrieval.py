@@ -108,8 +108,9 @@ def run_evaluation():
 
     print(f"\n开始评测，共 {len(records)} 条数据")
     for i, record in enumerate(records, 1):
-        qid = record.get("question_id", record.get("id", ""))
-        question = record.get("question", "")
+        qid = record.get("question_id", record.get("id", record.get("context_id", "")))
+        # CMRC 2019 用 context 作为查询（填空题），其他数据集用 question
+        question = record.get("question", record.get("context", ""))
         gt_chunk_ids = set(gt_map.get(qid, []))
 
         if not gt_chunk_ids:
