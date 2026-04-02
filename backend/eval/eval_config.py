@@ -11,6 +11,7 @@ PARENT_CHUNK_STORE_PATH = BASE_DIR / "data" / "eval_parent_chunks_2018.json"
 CHUNK_SIZE = 1024
 CHUNK_OVERLAP = 128
 TOP_K = 5
+RRF_TOP_K = 20         # RRF 融合阶段取 20 条候选
 OVERLAP_THRESHOLD = 0.3
 RESULTS_DIR = BASE_DIR / "eval_results"
 RESULTS_DIR.mkdir(exist_ok=True)

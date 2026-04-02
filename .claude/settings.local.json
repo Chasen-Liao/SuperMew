@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "mcp__docs-langchain__search_docs_by_lang_chain"
+      "mcp__docs-langchain__search_docs_by_lang_chain",
+      "mcp__MiniMax__web_search"
     ]
   },
   "spinnerTipsEnabled": false

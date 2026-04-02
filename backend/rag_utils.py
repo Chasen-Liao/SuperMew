@@ -234,9 +234,10 @@ def step_back_expand(query: str) -> dict:
     }
 
 
-def retrieve_documents(query: str, top_k: int = 5, milvus_manager=None) -> Dict[str, Any]:
+def retrieve_documents(query: str, top_k: int = 5, milvus_manager=None, candidate_k: int = None) -> Dict[str, Any]:
     mm = milvus_manager or _milvus_manager
-    candidate_k = max(top_k * 3, top_k)
+    if candidate_k is None:
+        candidate_k = max(top_k * 3, top_k)
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
     try:
         dense_embeddings = _embedding_service.get_embeddings([query])

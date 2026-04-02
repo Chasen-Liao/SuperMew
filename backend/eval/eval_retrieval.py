@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.eval_config import (
     DATASET_PATH, EVAL_COLLECTION, PARENT_CHUNK_STORE_PATH,
-    TOP_K, OVERLAP_THRESHOLD, RESULTS_DIR
+    TOP_K, RRF_TOP_K, OVERLAP_THRESHOLD, RESULTS_DIR
 )
 from eval.eval_utils import evaluate_single_query, aggregate_metrics
 from rag_utils import retrieve_documents, _rerank_documents, _auto_merge_documents
@@ -29,14 +29,13 @@ def load_cmrc_data(path: Path) -> list[dict]:
 
 
 def retrieve_baseline(query: str, top_k: int, mm: MilvusManager) -> list[dict]:
-    """完整流程：hybrid → rerank → auto_merge"""
-    result = retrieve_documents(query, top_k=top_k, milvus_manager=mm)
+    """完整流程：RRF(20) → rerank → auto_merge"""
+    result = retrieve_documents(query, top_k=top_k, milvus_manager=mm, candidate_k=RRF_TOP_K)
     return result.get("docs", [])
 
 
 def retrieve_no_rerank(query: str, top_k: int, mm: MilvusManager) -> list[dict]:
-    """跳过 rerank：hybrid → RRF排序 → auto_merge"""
-    candidate_k = max(top_k * 3, top_k)
+    """跳过 rerank：RRF(20) → RRF排序 → auto_merge"""
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
 
     from embedding import EmbeddingService
@@ -48,7 +47,7 @@ def retrieve_no_rerank(query: str, top_k: int, mm: MilvusManager) -> list[dict]:
     retrieved = mm.hybrid_retrieve(
         dense_embedding=dense_embedding,
         sparse_embedding=sparse_embedding,
-        top_k=candidate_k,
+        top_k=RRF_TOP_K,
         filter_expr=filter_expr,
     )
     docs_with_rank = [{**doc, "rrf_rank": i} for i, doc in enumerate(retrieved, 1)]
@@ -62,8 +61,7 @@ def retrieve_no_rerank(query: str, top_k: int, mm: MilvusManager) -> list[dict]:
 
 
 def retrieve_no_auto_merge(query: str, top_k: int, mm: MilvusManager) -> list[dict]:
-    """跳过 auto_merge：hybrid → rerank → 直接返回"""
-    candidate_k = max(top_k * 3, top_k)
+    """跳过 auto_merge：RRF(20) → rerank → 直接返回"""
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
 
     from embedding import EmbeddingService
@@ -75,7 +73,7 @@ def retrieve_no_auto_merge(query: str, top_k: int, mm: MilvusManager) -> list[di
     retrieved = mm.hybrid_retrieve(
         dense_embedding=dense_embedding,
         sparse_embedding=sparse_embedding,
-        top_k=candidate_k,
+        top_k=RRF_TOP_K,
         filter_expr=filter_expr,
     )
     reranked, _ = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
