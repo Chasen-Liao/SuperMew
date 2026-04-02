@@ -12,12 +12,18 @@
 
 ```
 backend/
+├── eval_indexer.py      # 批量索引脚本：将 CMRC context 分块后写入 Milvus
 ├── eval_retrieval.py    # 主评测脚本：加载数据、执行检索、输出报告
 ├── eval_utils.py        # 评测指标计算：Precision/Recall/MRR/NDCG
-├── eval_config.py       # 评测配置：数据集路径、top_k、输出目录
+├── eval_config.py        # 评测配置：数据集路径、top_k、输出目录、评测 collection 名称
 
 eval_results/            # 评测结果输出目录
 ```
+
+**评测使用独立的 Milvus collection（与生产数据隔离）：**
+- `EVAL_COLLECTION = "eval_cmrc2019"`
+- 评测前运行 `eval_indexer.py` 批量索引
+- 评测完成后可删除 collection 或保留供下次使用
 
 ## 4. 数据集
 
@@ -32,9 +38,19 @@ eval_results/            # 评测结果输出目录
 
 ## 5. 评测流程
 
+**步骤 0（索引）：评测前一次性执行**
+```
+eval_indexer.py:
+    1. 加载 CMRC 2019 数据集
+    2. 对每条数据的 context 按 chunk_size=1024, overlap=128 分块
+    3. 调用 milvus_writer 将 chunk 写入 EVAL_COLLECTION
+    4. 同时记录 (question_id → relevant_chunk_ids) 映射，用于 ground truth 对比
+```
+
+**步骤 1（评测）：批量执行**
 ```
 for each (question, context, answers) in dataset:
-    1. 将 context 按 chunk_size=1024, overlap=128 分块
+    1. 用 question 作为查询，在 EVAL_COLLECTION 中检索
     2. 执行 baseline 检索 → top_k 结果
     3. 执行 no_rerank 检索 → top_k 结果（跳过 Cross-Encoder）
     4. 执行 no_auto_merge 检索 → top_k 结果（禁用自动合并）
@@ -73,14 +89,16 @@ K 默认取 5。
 
 ```python
 DATASET_PATH = "data/cmrc2019_dev.json"  # CMRC 2019 开发集
+EVAL_COLLECTION = "eval_cmrc2019"        # 评测用 Milvus collection（与生产隔离）
 CHUNK_SIZE = 1024
 CHUNK_OVERLAP = 128
 TOP_K = 5
-OVERLAP_THRESHOLD = 0.3  # 答案与 chunk 重叠度阈值
+OVERLAP_THRESHOLD = 0.3                  # 答案与 chunk 重叠度阈值
 RESULTS_DIR = "eval_results"
 ```
 
 ## 10. 依赖
 
-- 无新增外部依赖，直接复用现有 `rag_utils.py` 的检索函数
+- 复用现有 `document_loader.py`（分块）、`milvus_writer.py`（写入）、`rag_utils.py`（检索）
 - 需要实例化 Milvus 和 Embedding 服务（读取现有 .env 配置）
+- 新增 `eval_indexer.py`：调用 `milvus_writer` 批量写入，不修改原写入逻辑
