@@ -37,7 +37,7 @@ class MilvusWriter:
                 {
                     "dense_embedding": dense_emb,
                     "sparse_embedding": sparse_emb,
-                    "text": doc["text"],
+                    "text": (doc["text"][:1999] if len(doc["text"]) > 1999 else doc["text"]),
                     "filename": doc["filename"],
                     "file_type": doc["file_type"],
                     "file_path": doc.get("file_path", ""),

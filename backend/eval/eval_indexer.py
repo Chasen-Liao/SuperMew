@@ -2,6 +2,7 @@
 import json
 import sys
 from pathlib import Path
+from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
 
 # backend/ 是 eval/ 的父目录，需要将其加入 path 以便导入 embedding 等模块
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -11,8 +12,7 @@ from eval.eval_config import (
     CHUNK_SIZE, CHUNK_OVERLAP, OVERLAP_THRESHOLD, RESULTS_DIR
 )
 from embedding import EmbeddingService
-from milvus_client import MilvusManager
-from milvus_writer import MilvusWriter
+from parent_chunk_store import ParentChunkStore
 from parent_chunk_store import ParentChunkStore
 
 
@@ -216,7 +216,7 @@ def run_indexer():
     gt_output = RESULTS_DIR / "ground_truth.json"
     gt_output.parent.mkdir(parents=True, exist_ok=True)
     with open(gt_output, "w", encoding="utf-8") as f:
-        json.dump(gt_map, f, ensure_ascii=False)
+        json.dump({k: list(v) for k, v in gt_map.items()}, f, ensure_ascii=False)
     print(f"Ground truth 已保存: {gt_output}")
 
     # 收集所有 chunks
@@ -230,13 +230,36 @@ def run_indexer():
     print(f"总 chunks 数量: {len(all_chunks)}")
 
     # 初始化 eval 专用的 Milvus 和 parent chunk store
-    eval_mm = MilvusManager(collection_name=EVAL_COLLECTION)
+    from config import MILVUS_HOST, MILVUS_PORT
     eval_pc_store = ParentChunkStore(store_path=PARENT_CHUNK_STORE_PATH)
 
-    # 重建 collection
+    # 重建 collection（使用 pymilvus 直接创建，text 字段用更大 VARCHAR）
     print(f"重建 eval collection: {EVAL_COLLECTION}")
-    eval_mm.drop_collection()
-    eval_mm.init_collection()
+    eval_client = MilvusClient(uri=f"http://{MILVUS_HOST}:{MILVUS_PORT}")
+    if eval_client.has_collection(EVAL_COLLECTION):
+        eval_client.drop_collection(EVAL_COLLECTION)
+
+    DENSE_DIM = 2560  # Qwen embedding dimension
+    schema = eval_client.create_schema(auto_id=True, enable_dynamic_field=True)
+    schema.add_field("id", DataType.INT64, is_primary=True, auto_id=True)
+    schema.add_field("dense_embedding", DataType.FLOAT_VECTOR, dim=DENSE_DIM)
+    schema.add_field("sparse_embedding", DataType.SPARSE_FLOAT_VECTOR)
+    schema.add_field("text", DataType.VARCHAR, max_length=4000)  # 更大空间
+    schema.add_field("filename", DataType.VARCHAR, max_length=255)
+    schema.add_field("file_type", DataType.VARCHAR, max_length=50)
+    schema.add_field("file_path", DataType.VARCHAR, max_length=1024)
+    schema.add_field("page_number", DataType.INT64)
+    schema.add_field("chunk_idx", DataType.INT64)
+    schema.add_field("chunk_id", DataType.VARCHAR, max_length=512)
+    schema.add_field("parent_chunk_id", DataType.VARCHAR, max_length=512)
+    schema.add_field("root_chunk_id", DataType.VARCHAR, max_length=512)
+    schema.add_field("chunk_level", DataType.INT64)
+
+    index_params = eval_client.prepare_index_params()
+    index_params.add_index("dense_embedding", index_type="HNSW", metric_type="IP", params={"M": 16, "efConstruction": 256})
+    index_params.add_index("sparse_embedding", index_type="SPARSE_INVERTED_INDEX", metric_type="IP", params={"drop_ratio_build": 0.2})
+
+    eval_client.create_collection(collection_name=EVAL_COLLECTION, schema=schema, index_params=index_params)
 
     # 写入 parent chunks（L1 和 L2 需要用于 auto-merge）
     parent_chunks = [c for c in all_chunks if c["chunk_level"] in (1, 2)]
@@ -245,11 +268,41 @@ def run_indexer():
 
     # 写入 Milvus
     print(f"写入 Milvus: {EVAL_COLLECTION}")
-    writer = MilvusWriter(
-        embedding_service=EmbeddingService(),
-        milvus_manager=eval_mm,
-    )
-    writer.write_documents(all_chunks, batch_size=50)
+    es = EmbeddingService()
+    TEXT_MAX_LEN = 3999
+
+    # fit corpus for BM25
+    all_texts = [c["text"] for c in all_chunks]
+    es.fit_corpus(all_texts)
+
+    for i in range(0, len(all_chunks), 50):
+        batch = all_chunks[i:i + 50]
+        texts = [c["text"][:TEXT_MAX_LEN] for c in batch]
+        dense_embs, sparse_embs = es.get_all_embeddings(texts)
+
+        insert_data = []
+        for c, dense, sparse in zip(batch, dense_embs, sparse_embs):
+            text_val = c["text"]
+            if len(text_val) > TEXT_MAX_LEN:
+                text_val = text_val[:TEXT_MAX_LEN]
+            insert_data.append({
+                "dense_embedding": dense,
+                "sparse_embedding": sparse,
+                "text": text_val,
+                "filename": c["filename"],
+                "file_type": c["file_type"],
+                "file_path": c.get("file_path", ""),
+                "page_number": c.get("page_number", 0),
+                "chunk_idx": c.get("chunk_idx", 0),
+                "chunk_id": c["chunk_id"],
+                "parent_chunk_id": c.get("parent_chunk_id", ""),
+                "root_chunk_id": c.get("root_chunk_id", ""),
+                "chunk_level": c.get("chunk_level", 0),
+            })
+
+        eval_client.insert(EVAL_COLLECTION, insert_data)
+        print(f"  批次 {i//50 + 1}/{(len(all_chunks) + 49)//50} 完成")
+
     print(f"索引完成: {len(all_chunks)} chunks")
 
 

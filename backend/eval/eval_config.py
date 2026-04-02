@@ -1,7 +1,8 @@
 """评测配置"""
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# eval_config.py 在 backend/eval/ 下，项目根目录在其 parent.parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 DATASET_PATH = BASE_DIR / "data" / "cmrc2019_dev.json"
 EVAL_COLLECTION = "eval_cmrc2019"
