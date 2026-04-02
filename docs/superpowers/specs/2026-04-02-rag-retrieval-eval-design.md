@@ -12,10 +12,11 @@
 
 ```
 backend/
-├── eval_indexer.py      # 批量索引脚本：将 CMRC context 分块后写入 Milvus
-├── eval_retrieval.py    # 主评测脚本：加载数据、执行检索、输出报告
-├── eval_utils.py        # 评测指标计算：Precision/Recall/MRR/NDCG
-├── eval_config.py        # 评测配置：数据集路径、top_k、输出目录、评测 collection 名称
+└── eval/
+    ├── eval_indexer.py      # 批量索引脚本：将 CMRC context 分块后写入 Milvus
+    ├── eval_retrieval.py    # 主评测脚本：加载数据、执行检索、输出报告
+    ├── eval_utils.py        # 评测指标计算：Precision/Recall/MRR/NDCG
+    └── eval_config.py       # 评测配置：数据集路径、top_k、输出目录、评测 collection 名称
 
 eval_results/            # 评测结果输出目录
 ```

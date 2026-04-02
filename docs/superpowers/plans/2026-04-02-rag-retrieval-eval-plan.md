@@ -14,10 +14,10 @@
 
 | 文件 | 职责 |
 |------|------|
-| `backend/eval_config.py` | 评测配置：数据集路径、collection 名称、top_k、重叠阈值 |
-| `backend/eval_indexer.py` | 批量索引脚本：从 CMRC 数据生成 chunks，写入 eval collection，输出 ground_truth.json |
-| `backend/eval_utils.py` | 评测指标计算：compute_precision / compute_recall / compute_mrr / compute_ndcg |
-| `backend/eval_retrieval.py` | 主评测脚本：加载 ground_truth，执行三种检索，计算指标，输出 CSV |
+| `backend/eval/eval_config.py` | 评测配置：数据集路径、collection 名称、top_k、重叠阈值 |
+| `backend/eval/eval_indexer.py` | 批量索引脚本：从 CMRC 数据生成 chunks，写入 eval collection，输出 ground_truth.json |
+| `backend/eval/eval_utils.py` | 评测指标计算：compute_precision / compute_recall / compute_mrr / compute_ndcg |
+| `backend/eval/eval_retrieval.py` | 主评测脚本：加载 ground_truth，执行三种检索，计算指标，输出 CSV |
 
 辅助：
 - `data/cmrc2019_dev.json` — 需要手动下载放置
@@ -650,7 +650,7 @@ if __name__ == "__main__":
 - [ ] **Step 3: 测试 retrieval 脚本（需要 Milvus 运行）**
 
 ```bash
-cd backend
+cd backend/eval
 # 验证语法
 python -m py_compile eval_retrieval.py && echo "语法正确"
 ```
@@ -681,7 +681,7 @@ python -c "import json; json.load(open('data/cmrc2019_dev.json'))" && echo "CMRC
 - [ ] **Step 2: 运行索引**
 
 ```bash
-cd backend
+cd backend/eval
 uv run python eval_indexer.py
 ```
 
