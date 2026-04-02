@@ -234,7 +234,8 @@ def step_back_expand(query: str) -> dict:
     }
 
 
-def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
+def retrieve_documents(query: str, top_k: int = 5, milvus_manager=None) -> Dict[str, Any]:
+    mm = milvus_manager or _milvus_manager
     candidate_k = max(top_k * 3, top_k)
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
     try:
@@ -242,7 +243,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
         dense_embedding = dense_embeddings[0]
         sparse_embedding = _embedding_service.get_sparse_embedding(query)
 
-        retrieved = _milvus_manager.hybrid_retrieve(
+        retrieved = mm.hybrid_retrieve(
             dense_embedding=dense_embedding,
             sparse_embedding=sparse_embedding,
             top_k=candidate_k,
@@ -259,7 +260,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
         try:
             dense_embeddings = _embedding_service.get_embeddings([query])
             dense_embedding = dense_embeddings[0]
-            retrieved = _milvus_manager.dense_retrieve(
+            retrieved = mm.dense_retrieve(
                 dense_embedding=dense_embedding,
                 top_k=candidate_k,
                 filter_expr=filter_expr,
