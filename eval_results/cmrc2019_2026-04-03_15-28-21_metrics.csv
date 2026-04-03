@@ -1,0 +1,4 @@
+experiment,precision,recall,mrr,ndcg,query_count
+baseline,0.251,0.3693,0.9314,0.4899,51
+no_rerank,0.251,0.3693,0.9314,0.4899,51
+no_auto_merge,0.251,0.3693,0.7941,0.4424,51

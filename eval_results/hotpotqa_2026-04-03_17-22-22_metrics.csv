@@ -1,0 +1,2 @@
+experiment,precision,recall,mrr,ndcg,query_count
+baseline,0.366,0.7595,0.7998,0.6974,100

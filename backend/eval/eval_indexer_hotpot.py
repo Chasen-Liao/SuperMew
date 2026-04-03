@@ -13,8 +13,6 @@ from config import MILVUS_HOST, MILVUS_PORT
 # ============================================================
 # 硬编码配置 - HotpotQA 多跳问答
 # ============================================================
-DATASET_URL = "https://hotpotqa.github.io/hotpot_dev_distractor_v1.json"
-DATASET_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "hotpot_dev_100.json"
 EVAL_COLLECTION = "eval_hotpotqa"
 RESULTS_DIR = Path(__file__).resolve().parent.parent.parent / "eval_results"
 RESULTS_DIR.mkdir(exist_ok=True, parents=True)
@@ -22,14 +20,30 @@ RESULTS_DIR.mkdir(exist_ok=True, parents=True)
 
 
 def _download_dataset():
-    """下载 HotpotQA dev distractor 数据集"""
-    import urllib.request
+    """下载 HotpotQA dev distractor 数据集（从 HuggingFace）"""
+    from datasets import load_dataset
     if DATASET_PATH.exists():
         print(f"[HotpotQA] 数据集已存在: {DATASET_PATH}")
         return
-    print(f"[HotpotQA] 下载数据集: {DATASET_URL}")
-    urllib.request.urlretrieve(DATASET_URL, DATASET_PATH)
+    print(f"[HotpotQA] 从 HuggingFace 加载数据集...")
+    ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split="train")
+    # 保存前 100 条为 JSON（与原格式兼容）
+    records = []
+    for rec in ds.select(range(100)):
+        records.append({
+            "id": rec["id"],
+            "question": rec["question"],
+            "answer": rec["answer"],
+            "supporting_facts": rec["supporting_facts"],
+            "context": rec["context"],
+        })
+    DATASET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(DATASET_PATH, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False)
     print(f"[HotpotQA] 下载完成: {DATASET_PATH}")
+
+
+DATASET_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "hotpot_dev_100.json"
 
 
 def _make_chunk_id(qid: str, title: str, sent_idx: int) -> str:
@@ -51,23 +65,26 @@ def run():
     gt_map: dict[str, list[str]] = {}
 
     for rec in records:
-        qid = rec.get("_id", rec.get("id", ""))
-        context = rec.get("context", [])
+        qid = rec.get("id", "")
+        ctx = rec.get("context", {})  # HuggingFace: dict with title/sentences lists
         question = rec.get("question", "")
         answer = rec.get("answer", "")
-        supporting_facts = rec.get("supporting_facts", [])
+        supporting_facts = rec.get("supporting_facts", {})
 
         # 构建 supporting_facts 集合：(title, sent_idx)
+        # HuggingFace 格式: {"title": [...], "sent_id": [...]}
         sf_set = set()
-        for sf in supporting_facts:
-            title = sf.get("title", "")
-            for idx in sf.get("sentences", []):
-                sf_set.add((title, idx))
+        sf_titles = supporting_facts.get("title", [])
+        sf_sent_ids = supporting_facts.get("sent_id", [])
+        for title, sent_id in zip(sf_titles, sf_sent_ids):
+            sf_set.add((title, sent_id))
 
         # 每个 sentence 作为一个 L3 chunk
-        for title_item in context:
-            title = title_item.get("title", "")
-            sentences = title_item.get("sentences", [])
+        # HuggingFace 格式: context["title"][i] -> title string, context["sentences"][i] -> list of sentences
+        titles = ctx.get("title", [])
+        sentences_list = ctx.get("sentences", [])
+
+        for idx, (title, sentences) in enumerate(zip(titles, sentences_list)):
             parent_id = f"{qid}:{title}"
 
             for sent_idx, sentence in enumerate(sentences):
@@ -94,9 +111,8 @@ def run():
 
         # Ground truth: supporting_facts 中的 sentence 对应的 chunk_id
         gt_chunk_ids = []
-        for title_item in context:
-            title = title_item.get("title", "")
-            for sent_idx in range(len(title_item.get("sentences", []))):
+        for idx, (title, sentences) in enumerate(zip(titles, sentences_list)):
+            for sent_idx in range(len(sentences)):
                 if (title, sent_idx) in sf_set:
                     chunk_id = _make_chunk_id(qid, title, sent_idx)
                     gt_chunk_ids.append(chunk_id)
