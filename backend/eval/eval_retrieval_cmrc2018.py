@@ -1,5 +1,6 @@
 """CMRC 2018 阅读理解 - 检索评测脚本"""
 import json
+import logging
 import sys
 import csv
 from pathlib import Path
@@ -9,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.eval_utils import evaluate_single_query, aggregate_metrics
 from milvus_client import MilvusManager
-from config import LEAF_RETRIEVE_LEVEL
+from config import API_KEY, BASE_URL, LEAF_RETRIEVE_LEVEL
 from embedding import EmbeddingService
 from rag_utils import retrieve_documents, _rerank_documents, _auto_merge_documents
 from langchain.chat_models import init_chat_model
@@ -74,13 +75,13 @@ def retrieve_no_auto_merge(query: str, mm: MilvusManager) -> list[dict]:
 
 def _init_hyde_model():
     """初始化 HyDE 模型，每次调用返回新实例"""
-    from config import API_KEY, BASE_URL
     return init_chat_model(
         model=HYDE_MODEL,
         model_provider="openai",
         api_key=API_KEY,
         base_url=BASE_URL,
         temperature=0.2,
+        stream_usage=True,
     )
 
 
@@ -94,7 +95,8 @@ def generate_hypothetical_document(query: str, model) -> str:
     )
     try:
         return (model.invoke(prompt).content or "").strip()
-    except Exception:
+    except Exception as e:
+        logging.warning(f"HyDE document generation failed for query '{query[:50]}...': {e}")
         return ""
 
 
