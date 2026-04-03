@@ -1,0 +1,2 @@
+experiment,precision,recall,mrr,ndcg,query_count,hyde_success_rate
+hyde,0.251,0.3693,0.902,0.4797,51,51/51
