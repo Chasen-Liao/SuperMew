@@ -18,7 +18,7 @@
 | 修改 | `backend/eval/eval_retrieval_cmrc2019.py` — 新增 HyDE 实验 |
 | 新建 | `eval_results/cmrc2018_hyde_{ts}_metrics.csv` — CMRC 2018 HyDE 结果 |
 | 新建 | `eval_results/cmrc2019_hyde_{ts}_metrics.csv` — CMRC 2019 HyDE 结果 |
-| 新建/更新 | `eval_results/report-YYYY-MM-DD-hyde.md` — HyDE vs Baseline 对比报告 |
+| 新建 | `eval_results/report-2026-04-03-hyde.md` — HyDE vs Baseline 对比报告 |
 
 ---
 
@@ -83,49 +83,87 @@ def retrieve_with_hyde(query: str, mm: MilvusManager, hyde_model) -> tuple[list[
     return result.get("docs", []), meta
 ```
 
-在 `run()` 函数中，新增 hyde 实验分支。在 `for i, rec in enumerate(records, 1):` 循环内，对每条 record，先用 `_init_hyde_model()` 初始化模型，然后调用 `retrieve_with_hyde()`。评测结果写入 `cmrc2018_hyde_{ts}_metrics.csv`。
+在 `run()` 函数中，新增独立的 `run_hyde_experiment()` 函数来执行完整的 HyDE 评测，避免与现有 baseline 实验混淆。
 
-修改后的主循环逻辑：
+新增 `run_hyde_experiment()` 函数：
 
 ```python
-hyde_model = _init_hyde_model()  # 初始化一次，复用
-hyde_success_count = 0
-hyde_total_count = 0
+def run_hyde_experiment(mm: MilvusManager, records: list[dict], gt_map: dict) -> tuple[list[dict], int, int]:
+    """
+    运行 HyDE 评测实验，返回 (hyde_results, hyde_success_count, hyde_total_count)。
+    hyde_success_count：成功生成假设文档的 query 数
+    hyde_total_count：参与评测的 query 总数（含生成失败）
+    """
+    from config import API_KEY, BASE_URL
 
-for i, rec in enumerate(records, 1):
-    qid = rec.get("question_id", rec.get("id", ""))
-    question = rec.get("question", "")
-    gt_ids = set(gt_map.get(qid, []))
-    if not gt_ids:
-        continue
+    hyde_model = _init_hyde_model()
+    hyde_results = []
+    hyde_success_count = 0
+    hyde_total_count = 0
 
-    # Baseline/No Rerank/No Auto-merge
-    for name, fn in experiments.items():
-        docs = fn(question, mm)
-        ids = [d.get("chunk_id", "") for d in docs]
-        metrics = evaluate_single_query(ids, gt_ids, TOP_K)
-        metrics["question_id"] = qid
-        all_results[name].append(metrics)
+    for i, rec in enumerate(records, 1):
+        qid = rec.get("question_id", rec.get("id", ""))
+        question = rec.get("question", "")
+        gt_ids = set(gt_map.get(qid, []))
+        if not gt_ids:
+            continue
 
-    # HyDE 实验
-    docs_hyde, hyde_meta = retrieve_with_hyde(question, mm, hyde_model)
-    if hyde_meta["hyde_generated"]:
-        hyde_total_count += 1
-        ids_hyde = [d.get("chunk_id", "") for d in docs_hyde]
-        if ids_hyde:  # 有召回结果才计入指标
-            metrics_hyde = evaluate_single_query(ids_hyde, gt_ids, TOP_K)
-            metrics_hyde["question_id"] = qid
-            all_results["hyde"].append(metrics_hyde)
+        docs_hyde, hyde_meta = retrieve_with_hyde(question, mm, hyde_model)
+        hyde_total_count += 1  # 每条 query 都计入分母
+
+        if hyde_meta["hyde_generated"]:
             hyde_success_count += 1
-    else:
-        hyde_total_count += 1  # 生成失败也计入总数
+            ids_hyde = [d.get("chunk_id", "") for d in docs_hyde]
+            if ids_hyde:  # 有召回结果才计入指标
+                metrics = evaluate_single_query(ids_hyde, gt_ids, TOP_K)
+                metrics["question_id"] = qid
+                hyde_results.append(metrics)
 
-print(f"  HyDE 生成成功率: {hyde_success_count}/{hyde_total_count}")
+        if i % 50 == 0:
+            print(f"  HyDE 已处理 {i}/{len(records)} 条")
+
+    print(f"  HyDE 生成成功率: {hyde_success_count}/{hyde_total_count}")
+    return hyde_results, hyde_success_count, hyde_total_count
 ```
 
-其中 `all_results` 需要新增 `"hyde"` key，`experiments` 字典不变（只跑三种 baseline 配置），hyde 结果单独收集。
+`run_hyde_experiment()` 在 `run()` 函数末尾被调用，单独写入 CSV：
 
-最终 CSV 输出格式不变，`experiment` 列值会包含 `hyde`。
+```python
+def run():
+    # ... 原有 baseline 实验逻辑不变 ...
+
+    # 写入 baseline CSV
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    csv_path = RESULTS_DIR / f"cmrc2018_{ts}_metrics.csv"
+    fields = ["experiment", "precision", "recall", "mrr", "ndcg", "query_count"]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for name, results in all_results.items():
+            if not results:
+                continue
+            agg = aggregate_metrics(results)
+            row = {**{k: round(agg[k], 4) for k in ["precision", "recall", "mrr", "ndcg"]},
+                   "experiment": name, "query_count": len(results)}
+            writer.writerow(row)
+
+    # 单独运行 HyDE 实验
+    print("\n[CMRC 2018] 开始 HyDE 实验...")
+    hyde_results, hyde_success, hyde_total = run_hyde_experiment(mm, records, gt_map)
+
+    # 写入 HyDE 独立 CSV
+    hyde_csv_path = RESULTS_DIR / f"cmrc2018_hyde_{ts}_metrics.csv"
+    with open(hyde_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        if hyde_results:
+            agg = aggregate_metrics(hyde_results)
+            row = {**{k: round(agg[k], 4) for k in ["precision", "recall", "mrr", "ndcg"]},
+                   "experiment": "hyde", "query_count": len(hyde_results),
+                   "hyde_success_rate": f"{hyde_success}/{hyde_total}"}
+            writer.writerow(row)
+    print(f"  HyDE CSV 已保存: {hyde_csv_path}")
+```
 
 ---
 
