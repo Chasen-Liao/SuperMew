@@ -173,7 +173,7 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 
 ### HyDE 检索评测结果
 
-> HyDE 模型：zai-org/GLM-4.5-Air；生成成功率：100%（两个数据集均全部成功生成假设文档）
+> HyDE 模型：zai-org/GLM-4.5-Air；生成成功率：100%（三个数据集均全部成功生成假设文档）
 
 | 数据集 | 实验 | P@5 | R@5 | MRR | NDCG@5 | 对比 Baseline |
 |--------|------|------|------|------|--------|---------------|
@@ -181,10 +181,14 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 | CMRC 2018 | **HyDE** | 0.1977 | 0.3266 | 0.5523 | 0.3101 | MRR -0.8% |
 | CMRC 2019 | Baseline | 0.2510 | 0.3693 | 0.9314 | 0.4899 | — |
 | CMRC 2019 | **HyDE** | 0.2510 | 0.3693 | 0.9020 | 0.4797 | MRR -3.2% |
+| HotpotQA | Baseline | 0.3640 | 0.7575 | 0.7990 | 0.6955 | — |
+| HotpotQA | **HyDE** | 0.3580 | 0.7425 | 0.7828 | 0.6837 | MRR -2.0% |
 
-**结论**：HyDE 在当前检索配置下**未带来正向收益**。阅读理解 MRR/NDCG 均小幅下降；填空题 MRR 下降 3.2%。RRF(k=60) 融合已足够强，HyDE 生成的假设文档反而引入了语义偏差。
+**结论**：HyDE 在所有三个数据集上**均未带来正向收益**。即使 HotpotQA（多跳问答）的 query-doc 语义 gap 最大，HyDE 仍然无效。RRF(k=60) 融合已足够强，HyDE 生成的假设文档反而引入了语义偏差。
 
-详细报告：`eval_results/report-2026-04-03-hyde.md`
+详细报告：
+- `eval_results/report-2026-04-03-hyde.md` — CMRC 2018/2019 评测
+- `eval_results/report-2026-04-03-hotpotqa-hyde.md` — HotpotQA 多跳问答评测
 
 ## 未来迭代（Todo Lists）
 
