@@ -1,0 +1,160 @@
+{
+  "id": "2026-04-05-002653",
+  "generated_at": "2026-04-04T16:26:53.7068131Z",
+  "language": "zh",
+  "pages": [
+    {
+      "slug": "1-xiang-mu-gai-shu",
+      "title": "项目概述",
+      "file": "1-xiang-mu-gai-shu.md",
+      "section": "快速入门",
+      "level": "Beginner"
+    },
+    {
+      "slug": "2-kuai-su-qi-dong",
+      "title": "快速启动",
+      "file": "2-kuai-su-qi-dong.md",
+      "section": "快速入门",
+      "level": "Beginner"
+    },
+    {
+      "slug": "3-huan-jing-zhun-bei-yu-yi-lai-an-zhuang",
+      "title": "环境准备与依赖安装",
+      "file": "3-huan-jing-zhun-bei-yu-yi-lai-an-zhuang.md",
+      "section": "快速入门",
+      "group": "环境配置",
+      "level": "Beginner"
+    },
+    {
+      "slug": "4-pei-zhi-wen-jian-shuo-ming",
+      "title": "配置文件说明",
+      "file": "4-pei-zhi-wen-jian-shuo-ming.md",
+      "section": "快速入门",
+      "group": "环境配置",
+      "level": "Beginner"
+    },
+    {
+      "slug": "5-xi-tong-jia-gou-zong-lan",
+      "title": "系统架构总览",
+      "file": "5-xi-tong-jia-gou-zong-lan.md",
+      "section": "核心概念与架构",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "6-san-ceng-ji-yi-jia-gou",
+      "title": "三层记忆架构",
+      "file": "6-san-ceng-ji-yi-jia-gou.md",
+      "section": "核心概念与架构",
+      "group": "记忆系统",
+      "level": "Advanced"
+    },
+    {
+      "slug": "7-yong-hu-hua-xiang-chi-jiu-hua",
+      "title": "用户画像持久化",
+      "file": "7-yong-hu-hua-xiang-chi-jiu-hua.md",
+      "section": "核心概念与架构",
+      "group": "记忆系统",
+      "level": "Advanced"
+    },
+    {
+      "slug": "8-hui-hua-zhai-yao-ji-yi",
+      "title": "会话摘要记忆",
+      "file": "8-hui-hua-zhai-yao-ji-yi.md",
+      "section": "核心概念与架构",
+      "group": "记忆系统",
+      "level": "Advanced"
+    },
+    {
+      "slug": "9-langchain-agent-shi-xian",
+      "title": "LangChain Agent 实现",
+      "file": "9-langchain-agent-shi-xian.md",
+      "section": "核心概念与架构",
+      "group": "Agent 核心",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "10-zhong-jian-jian-ji-zhi",
+      "title": "中间件机制",
+      "file": "10-zhong-jian-jian-ji-zhi.md",
+      "section": "核心概念与架构",
+      "group": "Agent 核心",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "11-gong-ju-xi-tong-she-ji",
+      "title": "工具系统设计",
+      "file": "11-gong-ju-xi-tong-she-ji.md",
+      "section": "核心概念与架构",
+      "group": "Agent 核心",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "12-hun-he-jian-suo-yuan-li",
+      "title": "混合检索原理",
+      "file": "12-hun-he-jian-suo-yuan-li.md",
+      "section": "RAG 检索系统",
+      "group": "检索流程",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "13-auto-merging-fen-kuai-he-bing",
+      "title": "Auto-merging 分块合并",
+      "file": "13-auto-merging-fen-kuai-he-bing.md",
+      "section": "RAG 检索系统",
+      "group": "检索流程",
+      "level": "Advanced"
+    },
+    {
+      "slug": "14-cha-xun-zhong-xie-yu-lu-you",
+      "title": "查询重写与路由",
+      "file": "14-cha-xun-zhong-xie-yu-lu-you.md",
+      "section": "RAG 检索系统",
+      "group": "检索流程",
+      "level": "Advanced"
+    },
+    {
+      "slug": "15-xiang-liang-hua-fu-wu",
+      "title": "向量化服务",
+      "file": "15-xiang-liang-hua-fu-wu.md",
+      "section": "RAG 检索系统",
+      "group": "向量与索引",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "16-milvus-ji-he-guan-li",
+      "title": "Milvus 集合管理",
+      "file": "16-milvus-ji-he-guan-li.md",
+      "section": "RAG 检索系统",
+      "group": "向量与索引",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "17-ping-ce-zhi-biao-shuo-ming",
+      "title": "评测指标说明",
+      "file": "17-ping-ce-zhi-biao-shuo-ming.md",
+      "section": "评估与测试",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "18-ping-ce-jiao-ben-shi-yong",
+      "title": "评测脚本使用",
+      "file": "18-ping-ce-jiao-ben-shi-yong.md",
+      "section": "评估与测试",
+      "level": "Advanced"
+    },
+    {
+      "slug": "19-docker-fu-wu-bu-shu",
+      "title": "Docker 服务部署",
+      "file": "19-docker-fu-wu-bu-shu.md",
+      "section": "部署与运维",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "20-api-jie-kou-wen-dang",
+      "title": "API 接口文档",
+      "file": "20-api-jie-kou-wen-dang.md",
+      "section": "部署与运维",
+      "level": "Beginner"
+    }
+  ]
+}

@@ -1,4 +1,9 @@
+import uvicorn
+
+from backend.config import HOST, PORT
+
 """SuperMew 应用启动入口"""
+
 import sys
 from pathlib import Path
 
@@ -6,9 +11,6 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "backend"))
-
-import uvicorn
-from backend.config import HOST, PORT
 
 
 def main():
