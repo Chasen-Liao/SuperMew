@@ -10,7 +10,7 @@ Agent的项目记录，方便后续持续更新与展示。
 
 - Python `3.12+`
 - 包管理建议：`uv`（也支持 `pip`）
-- Docker / Docker Compose（用于启动 Milvus 依赖）
+- Docker / Docker Compose（用于启动 Milvus + PostgreSQL 依赖）
 
 ### 2) 使用 pyproject 安装依赖
 
@@ -46,12 +46,12 @@ uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 ```env
 # ===== Model =====
 API_KEY=your_api_key
-MODEL=your_model_name
-BASE_URL=https://your-llm-endpoint/v1
-EMBEDDER=your_embedding_model
+MODEL=Qwen/Qwen3.5-122B-A10B
+BASE_URL=https://api.siliconflow.cn/v1
+EMBEDDER=Qwen/Qwen3-Embedding-4B
 
 # ===== Rerank (可选，不配则自动降级) =====
-RERANK_MODEL=your_rerank_model
+RERANK_MODEL=Qwen/Qwen3-Reranker-4B
 RERANK_BINDING_HOST=https://your-rerank-host
 RERANK_API_KEY=your_rerank_api_key
 
@@ -59,18 +59,24 @@ RERANK_API_KEY=your_rerank_api_key
 MILVUS_HOST=127.0.0.1
 MILVUS_PORT=19530
 
+# ===== PostgreSQL =====
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5433
+POSTGRES_USER=supermew
+POSTGRES_PASSWORD=supermew123
+POSTGRES_DB=supermew
+
 # ===== Tools （可选）=====
 AMAP_WEATHER_API=https://restapi.amap.com/v3/weather/weatherInfo
 AMAP_API_KEY=your_amap_api_key
-
 ```
 
-### 4) Docker 部署（Milvus 向量库）
+### 4) Docker 部署（Milvus + PostgreSQL）
 
-当前仓库的 `docker-compose.yml` 主要用于启动 Milvus 相关组件（`etcd` / `minio` / `standalone` / `attu`）：
+当前仓库的 `docker-compose.yml` 用于启动 Milvus 相关组件和 PostgreSQL：
 
 ```bash
-# 启动向量库依赖
+# 启动向量库和数据库依赖
 docker compose up -d
 
 # 查看服务状态
@@ -87,10 +93,11 @@ docker compose logs -f standalone
 - MinIO API：`9000`
 - MinIO Console：`9001`
 - Attu：`8080`
+- PostgreSQL：`5433`
 
 ### 5) 启动应用并访问
 
-在 Milvus 启动后，运行后端应用：
+在 Milvus 和 PostgreSQL 启动后，运行后端应用：
 
 ```bash
 uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
@@ -101,33 +108,189 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 - 前端页面：`http://127.0.0.1:8000/`
 - API 文档：`http://127.0.0.1:8000/docs`
 
+---
+
 ## 项目概览
 
 - **核心能力**：
-  - LangChain Agent + 自定义工具（天气查询、知识库检索、记忆检索）。
-  - 文档上传后执行三级滑动窗口分块，叶子分块向量化写入 Milvus，父级分块写入本地 DocStore。
-  - **三层记忆架构**：PostgresSaver 短期会话记忆 + PostgresStore 用户画像 + Milvus 记忆向量库。
-  - 会话记忆与摘要（PostgresSaver checkpointer），保持长对话上下文。
-- **运行形态**：FastAPI 后端 + 纯前端（Vue 3 CDN 单页）+ Milvus 向量库 + PostgreSQL。
+  - LangChain Agent + 自定义工具（天气查询、知识库检索、记忆检索）
+  - 文档上传后执行三级滑动窗口分块，叶子分块向量化写入 Milvus，父级分块写入本地 DocStore
+  - **三层记忆架构**：PostgresSaver 短期会话记忆 + PostgresStore 用户画像 + Milvus 记忆向量库
+  - 会话记忆与摘要（PostgresSaver checkpointer），保持长对话上下文
+- **运行形态**：FastAPI 后端 + 纯前端（Vue 3 CDN 单页）+ Milvus 向量库 + PostgreSQL
+
+---
+
+## 技术栈
+
+| 层级 | 技术 | 用途 |
+|------|------|------|
+| **Web 框架** | FastAPI + Uvicorn | 高性能 API 服务 |
+| **Agent 框架** | LangChain + LangGraph | Agent 构建和状态管理 |
+| **Agent 记忆持久化** | PostgresSaver + PostgresStore | 会话状态和长期记忆 |
+| **向量数据库** | Milvus (v2.5.14) | 文档和记忆的向量存储与检索 |
+| **关系数据库** | PostgreSQL (v16) | 结构化数据存储 |
+| **文本嵌入** | Qwen3-Embedding-4B (SiliconFlow) | 稠密向量生成 |
+| **重排序** | Qwen3-Reranker-4B | 检索结果精排 |
+| **文档处理** | PyPDFLoader + Docx2txtLoader | PDF/Word 解析 |
+| **分块策略** | RecursiveCharacterTextSplitter | 三级分层分块 |
+| **网络请求** | requests | 外部 API 调用 |
+
+---
 
 ## 关键创新点
 
-- **三层记忆架构**：短期记忆（PostgresSaver Checkpointer）+ 用户画像（PostgresStore）+ 记忆向量库（Milvus），兼顾上下文、结构和语义检索。
-- **自动摘要钩子**：`memory_summary_hook` 基于 `@after_model` 实现，每25轮自动提取对话摘要写入 Milvus，无需手动重建。
-- **用户记忆持久化**：基于 LLM 自动提取用户信息（姓名、学校、身份、兴趣等），通过 PostgresStore 持久化到 PostgreSQL，支持跨会话记忆。
-- **混合检索落地**：稠密向量 + BM25 稀疏向量，Milvus Hybrid Search + RRF 排序，兼顾语义与词匹配。
-- **Jina Rerank 接入**：Hybrid/Dense 召回后进行 API 级精排，支持返回 `rerank_score` 并在前端可视化。
-- **双向降级**：稀疏生成或 Hybrid 调用失败时自动降级为纯稠密检索，提升稳定性。
-- **流式输出（Streaming）**：后端基于 `agent.astream(stream_mode="messages")` 逐 token 推送，前端 SSE + ReadableStream 实现打字机效果。
-- **回答终止功能**：前端 `AbortController` + 后端 `StreamingResponse` 支持用户随时中断正在生成的回答。
-- **会话摘要记忆**：PostgresSaver checkpointer 自动持久化会话历史，支持会话切换与恢复。
-- **文档处理链路**：上传 → 切分 → 稠密/稀疏向量同步生成 → Milvus 入库，支持重复上传自动清理旧 chunk。
-- **三级分块 + Auto-merging**：L1/L2/L3 三层滑窗切分；检索时优先召回 L3，满足阈值后自动合并到父块（L3->L2->L1）。
-- **Leaf-only 向量化存储**：仅叶子分块写入 Milvus，父块写入 DocStore，减少向量冗余并保留上下文聚合能力。
-- **工具可扩展**：天气查询示例 + 知识库检索 + 记忆检索，便于按需增添第三方 API 或企业数据源。
-- **RAG 过程可观测**：记录检索、评分、重写与来源信息，回答完成后前端可展开查看完整 RAG Trace。
-- **查询重写体系**：Step-Back 与 HyDE 两种扩展方式 + 路由选择，必要时触发重写检索。
-- **相关性评分门控**：基于结构化输出的 `grade_documents` 判断是否需要重写检索。
+- **三层记忆架构**：短期记忆（PostgresSaver Checkpointer）+ 用户画像（PostgresStore）+ 记忆向量库（Milvus），兼顾上下文、结构和语义检索
+- **自动摘要钩子**：`memory_summary_hook` 基于 `@after_model` 实现，每25轮自动提取对话摘要写入 Milvus，无需手动重建
+- **用户记忆持久化**：基于 LLM 自动提取用户信息（姓名、学校、身份、兴趣等），通过 PostgresStore 持久化到 PostgreSQL，支持跨会话记忆
+- **混合检索落地**：稠密向量 + BM25 稀疏向量，Milvus Hybrid Search + RRF 排序，兼顾语义与词匹配
+- **Jina Rerank 接入**：Hybrid/Dense 召回后进行 API 级精排，支持返回 `rerank_score` 并在前端可视化
+- **双向降级**：稀疏生成或 Hybrid 调用失败时自动降级为纯稠密检索，提升稳定性
+- **流式输出（Streaming）**：后端基于 `agent.astream(stream_mode="messages")` 逐 token 推送，前端 SSE + ReadableStream 实现打字机效果
+- **回答终止功能**：前端 `AbortController` + 后端 `StreamingResponse` 支持用户随时中断正在生成的回答
+- **会话摘要记忆**：PostgresSaver checkpointer 自动持久化会话历史，支持会话切换与恢复
+- **文档处理链路**：上传 → 切分 → 稠密/稀疏向量同步生成 → Milvus 入库，支持重复上传自动清理旧 chunk
+- **三级分块 + Auto-merging**：L1/L2/L3 三层滑窗切分；检索时优先召回 L3，满足阈值后自动合并到父块（L3->L2->L1）
+- **Leaf-only 向量化存储**：仅叶子分块写入 Milvus，父块写入 DocStore，减少向量冗余并保留上下文聚合能力
+- **工具可扩展**：天气查询示例 + 知识库检索 + 记忆检索，便于按需增添第三方 API 或企业数据源
+- **RAG 过程可观测**：记录检索、评分、重写与来源信息，回答完成后前端可展开查看完整 RAG Trace
+- **查询重写体系**：Step-Back 与 HyDE 两种扩展方式 + 路由选择，必要时触发重写检索
+- **相关性评分门控**：基于结构化输出的 `grade_documents` 判断是否需要重写检索
+
+---
+
+## 目录与架构
+
+```
+SuperMew/
+├── backend/
+│   ├── app.py                  # FastAPI 入口、CORS、静态资源挂载、定时任务调度
+│   ├── api.py                  # REST API（聊天/会话/文档管理）
+│   ├── agent.py                # LangChain Agent + PostgresSaver checkpointer + PostgresStore
+│   ├── middleware.py           # UserMemoryManager + MemorySummaryMiddleware + system_prompt_middleware
+│   ├── memory_vector_store.py  # Milvus user_memory collection 管理
+│   ├── memory_tasks.py         # 记忆索引定时重建任务（每日凌晨3点）
+│   ├── config.py               # 环境变量配置
+│   ├── schemas.py              # Pydantic 请求/响应模型
+│   ├── tools.py                # 工具函数（天气/搜索/记忆检索）+ emit_rag_step 跨线程调度
+│   ├── rag_pipeline.py         # LangGraph RAG 工作流
+│   ├── rag_utils.py            # 检索、查询重写、HyDE、Auto-merging
+│   ├── embedding.py            # 稠密向量 API 调用 + BM25 稀疏向量生成
+│   ├── milvus_client.py        # Milvus 集合定义、混合检索
+│   ├── milvus_writer.py        # 向量写入（稠密+稀疏）
+│   ├── document_loader.py      # PDF/Word 加载与三级分块
+│   ├── parent_chunk_store.py    # 父级分块 DocStore（用于 Auto-merging）
+│   ├── migrate_to_checkpointer.py  # 历史 JSON 数据迁移到 PostgresSaver
+│   └── soul/
+│       └── soul.md             # Agent 系统提示词
+├── frontend/
+│   ├── index.html              # Vue 3 单页应用
+│   ├── script.js               # SSE 流式处理、状态机
+│   └── style.css               # 样式
+├── data/
+│   ├── documents/              # 上传文档原文件
+│   └── parent_chunks.json     # 父级分块存储（L1/L2）
+├── docker-compose.yml           # PostgreSQL + Milvus + Attu
+├── pyproject.toml              # 项目依赖
+└── .env / .env.example         # 环境变量配置
+```
+
+---
+
+## 核心流程
+
+### 1) 项目全链路（端到端）
+
+```mermaid
+flowchart TD
+    A[用户发送消息] --> B[POST /chat/stream]
+    B --> C[FastAPI StreamingResponse SSE]
+    C --> D[LangChain Agent 判断工具调用]
+    D --> E{问题类型}
+    E -->|天气问题| F[get_current_weather]
+    E -->|知识问答| G[search_knowledge_base]
+    E -->|记忆检索| H[search_memory]
+    G --> I[RAG Pipeline]
+    H --> J[Milvus user_memory]
+    I --> K[emit_rag_step 实时推送]
+    K --> L[agent.astream 逐 token 流式生成]
+    L --> M[前端 SSE 解析]
+    M --> N[打字机效果渲染]
+    M --> O[RAG Trace 可视化]
+```
+
+### 2) RAG 全链路（LangGraph 工作流）
+
+```mermaid
+flowchart TD
+    A[retrieve_initial<br/>初始检索 top_k=5] --> B[grade_documents<br/>相关性评分]
+    B --> C{yes/no}
+    C -->|yes| D[END]
+    C -->|no| E[rewrite_question<br/>查询扩展]
+    E --> F{策略选择}
+    F -->|step_back| G[抽象退步问题]
+    F -->|hyde| H[假设性文档]
+    F -->|complex| I[复杂问题分解]
+    G --> J[retrieve_expanded<br/>扩展检索]
+    H --> J
+    I --> J
+    J --> K[结果去重]
+    K --> L[END]
+```
+
+**检索实现**：
+1. `retrieve_initial`：Hybrid Search（Dense + Sparse + RRF k=60）→ Jina Rerank 精排 → Auto-merging（L3→L2→L1）
+2. `grade_documents`：结构化输出 `yes/no` 判断相关性
+3. `rewrite_question`：选择策略并生成重写查询
+4. `retrieve_expanded`：扩展检索结果合并去重
+
+### 3) 文档入库链路
+
+```mermaid
+flowchart LR
+    A[上传 PDF/Word] --> B[document_loader.py<br/>三级分块]
+    B --> C1[L1 chunk_size=1200]
+    B --> C2[L2 chunk_size=600]
+    B --> C3[L3 chunk_size=300]
+    C1 --> D1[parent_chunk_store.py<br/>DocStore]
+    C2 --> D2[parent_chunk_store.py<br/>DocStore]
+    C3 --> E[embedding.py<br/>向量生成]
+    E --> F[milvus_writer.py<br/>Milvus]
+```
+
+### 4) 三层记忆架构
+
+```mermaid
+flowchart TD
+    A[用户消息] --> B1[PostgresSaver Checkpointer]
+    A --> B2[UserMemoryManager]
+    A --> B3[memory_summary_hook]
+    
+    B1 --> C1[会话历史持久化<br/>短期记忆]
+    B2 --> D2[LLM 提取结构化信息]
+    D2 --> C2[PostgresStore<br/>用户画像]
+    B3 --> D3{每25轮触发}
+    D3 --> E3[LLM 总结对话要点]
+    E3 --> C3[Milvus user_memory<br/>长期记忆]
+    C3 --> F3[search_memory 工具<br/>混合检索召回]
+```
+
+---
+
+## API 速览
+
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/chat` | POST | 非流式对话 |
+| `/chat/stream` | POST | SSE 流式对话 |
+| `/sessions/{user_id}` | GET | 获取用户会话列表 |
+| `/sessions/{user_id}/{session_id}` | GET | 获取会话消息历史 |
+| `/sessions/{user_id}/{session_id}` | DELETE | 删除会话 |
+| `/documents` | GET | 获取文档列表 |
+| `/documents/upload` | POST | 上传文档（PDF/Word） |
+| `/documents/{filename}` | DELETE | 删除文档向量 |
+
+---
 
 ## RAG 检索评测
 
@@ -165,15 +328,9 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 | **Auto-merge 对填空题有正向作用** | CMRC 2019 禁用后 MRR 下降 13.7%，填空题受益于上下文扩展 |
 | **任务类型影响显著** | 填空题 MRR 高达 0.93，阅读理解仅 0.56，真实阅读理解检索难度更大 |
 
-### 评测文件
-
-- `backend/eval/eval_indexer_cmrc2018.py` / `backend/eval/eval_retrieval_cmrc2018.py` — CMRC 2018 独立评测脚本
-- `backend/eval/eval_indexer_cmrc2019.py` / `backend/eval/eval_retrieval_cmrc2019.py` — CMRC 2019 独立评测脚本
-- `eval_results/report-2026-04-03.md` — 完整评测报告
-
 ### HyDE 检索评测结果
 
-> HyDE 模型：zai-org/GLM-4.5-Air；生成成功率：100%（三个数据集均全部成功生成假设文档）
+> HyDE 模型：zai-org/GLM-4.5-Air；生成成功率：100%
 
 | 数据集 | 实验 | P@5 | R@5 | MRR | NDCG@5 | 对比 Baseline |
 |--------|------|------|------|------|--------|---------------|
@@ -184,498 +341,133 @@ uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 | HotpotQA | Baseline | 0.3640 | 0.7575 | 0.7990 | 0.6955 | — |
 | HotpotQA | **HyDE** | 0.3580 | 0.7425 | 0.7828 | 0.6837 | MRR -2.0% |
 
-**结论**：HyDE 在所有三个数据集上**均未带来正向收益**。即使 HotpotQA（多跳问答）的 query-doc 语义 gap 最大，HyDE 仍然无效。RRF(k=60) 融合已足够强，HyDE 生成的假设文档反而引入了语义偏差。
+**结论**：HyDE 在所有三个数据集上**均未带来正向收益**。RRF(k=60) 融合已足够强，HyDE 生成的假设文档反而引入了语义偏差。
 
-详细报告：
-- `eval_results/report-2026-04-03-hyde.md` — CMRC 2018/2019 评测
-- `eval_results/report-2026-04-03-hotpotqa-hyde.md` — HotpotQA 多跳问答评测
-
-## 未来迭代（Todo Lists）
-
-### RAG部分
-
-#### 数据层、Chunk分块
-
-1. 先做文档结构解析，按文档结构做粗拆分，再用递归字符分块兜底，保证打的主题单元不被拆分（2000-3000token）；再用语义分块做精细化拆分，控制单块大小（512-1024token）
-2. 代码块、表格、图片特殊处理
-3. 实现 ParentDocument/Auto-merging Retriever 策略 --done
-
-#### 召回层
-
-1. BM25的k1和b新增参数扫描
-2. RRF额外做BM25和dense的权重，可以通过AB test确定
-3. 做一个小型标注集比较dense only、sparse only、hybrid、hybrid + rerank的gold chunk
-
-#### 生成层
-
-1. 子问题分解（CoT、专门的分解小模型、判断分几个子问题）
-2. 多文档Refine（一次拼接、串行Refine）
-3. 多文档冲突处理（A文档说X，B文档说非X），回答中显式输出“来源存在冲突”
-
-#### 其他
-
-1. 向量嵌入：新增多模态 embedding 能力
-2. 搭建 RAG 评估体系
-3. Rerank 策略评估（top\_k、candidate\_k、召回/精排比例）
-
-### 其他能力拓展
-
-1. 开发 SQL assistant Skill
-2. 实现暂停功能与人工介入机制 --done
-3. 新增问题类型判断，简单问题跳过复杂处理流程
-4. 扩展网络搜索能力
-5. 支持多步骤规划与任务并行执行
-6. 搭建路由器节点，由 LLM 自主判断下一步动作
-7. 优化 memory 管理：集成 MemO、LangMem 等方案
-8. multi-agent：工具过多，把工具拆分给职责明确的专业化agent，提升工具选择的准确性和整体稳定性
-9. 历史记录会话名称可修改
-10. 死循环检测与恢复：\_is\_stuck + attempt\_loop\_recovery
-11. 记忆向量库按用户隔离（当前所有记忆共用 default thread\_id）
-12. 记忆检索结果可视化：展示召回了哪些记忆片段
-
-### 后端服务建设
-
-1. 实现用户注册登录、密码加密、权限管理，基于 sqlalchemy 搭建 ORM 数据库
-2. 聊天记录落地数据库，引入 redis 做缓存优化
-
-## 目录与架构
-
-- 后端：`backend/`
-  - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载。
-  - [api.py](backend/api.py)：聊天、会话管理、文档管理接口。
-  - [agent.py](backend/agent.py)：LangChain Agent、PostgresSaver checkpointer、PostgresStore 长期记忆。
-  - [middleware.py](backend/middleware.py)：`UserMemoryManager` 用户画像提取 + `memory_summary_hook` 摘要钩子 + `system_prompt_middleware` 动态系统提示词。
-  - [memory\_vector\_store.py](backend/memory_vector_store.py)：Milvus user\_memory collection 管理（创建、插入、检索）。
-  - [tools.py](backend/tools.py)：天气查询、知识库检索、记忆检索工具。
-  - [rag\_pipeline.py](backend/rag_pipeline.py)：LangGraph RAG 工作流（检索→评分→重写→二次检索）。
-  - [rag\_utils.py](backend/rag_utils.py)：检索、查询重写、HyDE 实现。
-  - [embedding.py](backend/embedding.py)：稠密向量 API 调用 + BM25 稀疏向量生成。
-  - [document\_loader.py](backend/document_loader.py)：PDF/Word 加载与分片。
-  - [parent\_chunk\_store.py](backend/parent_chunk_store.py)：父级分块 DocStore（用于 Auto-merging 回取父块）。
-  - [milvus\_writer.py](backend/milvus_writer.py)：向量写入（稠密+稀疏）。
-  - [milvus\_client.py](backend/milvus_client.py)：Milvus 集合定义、混合检索。
-  - [migrate\_to\_checkpointer.py](backend/migrate_to_checkpointer.py)：历史 `customer_service_history.json` 数据迁移到 PostgresSaver checkpointer。
-  - [schemas.py](backend/schemas.py)：Pydantic 请求/响应模型。
-  - [config.py](backend/config.py)：环境变量配置。
-- 前端：`frontend/`
-  - [index.html](frontend/index.html) + [script.js](frontend/script.js) + [style.css](frontend/style.css)：Vue 3 + marked + highlight.js，提供聊天、历史会话、文档上传/删除界面。
-- 配置文件：
-  - [.env.example](.env.example)：环境变量模板。
-  - [docker-compose.yml](docker-compose.yml)：PostgreSQL + Milvus + Attu。
-  - [pyproject.toml](pyproject.toml)：项目依赖管理。
-- 数据：`data/`
-  - `customer_service_history.json`：会话元数据（会话列表）。
-  - `parent_chunks.json`：父级分块存储（L1/L2）。
-  - `documents/`：上传文档原文件。
-- 向量库：Milvus（可由 `docker-compose` 或自建服务提供）。
-- 记忆存储：PostgreSQL（PostgresSaver checkpointer + PostgresStore + 用户记忆）。
-
-## 核心流程
-
-### 1) 项目全链路（端到端）
-
-1. 用户在前端输入问题，调用 `POST /chat/stream`（流式）。
-2. FastAPI `api.py` 返回 `StreamingResponse(media_type="text/event-stream")`。
-3. LangChain Agent 根据问题类型决定是否调用工具：
-
-- 天气问题 → `get_current_weather`
-- 知识问答 → `search_knowledge_base`
-
-1. 若命中知识库工具，进入 `rag_pipeline.py` 执行检索工作流，各阶段通过 `emit_rag_step()` 实时推送到前端。
-2. 检索结果与 RAG Trace 一起返回，Agent 流式生成最终回答（逐 token 推送）。
-3. 前端 ReadableStream 逐块解析 SSE，打字机效果实时渲染。
-4. 同时消息落盘到 `customer_service_history.json`，支持历史会话回放。
-
-### 2) RAG 全链路（重点）
-
-1. **初次召回**：`retrieve_initial`
-   - 调用 `retrieve_documents`。
-   - 先按 `chunk_level == 3` 执行 Milvus Hybrid 检索（Dense + Sparse + RRF）。
-   - 取更大候选集后走 Jina Rerank 精排。
-   - 对召回叶子块执行 Auto-merging（L3->L2->L1），父块从 DocStore 读取。
-2. **相关性打分门控**：`grade_documents`
-   - 使用结构化输出打分 `yes/no`。
-   - `yes` 直接进入生成回答；`no` 进入重写阶段。
-3. **查询重写路由**：`rewrite_question`
-   - 在 `step_back / hyde / complex` 中选择策略。
-   - 生成 `rewrite_query`、`step_back_question`、`hypothetical_doc` 等中间结果。
-4. **二次召回**：`retrieve_expanded`
-   - 对重写后的查询（或 HyDE 文档）再次检索。
-   - 同样执行 L3 召回 + Auto-merging，结果去重后返回上下文。
-5. **答案生成**：Agent 结合上下文生成最终回答。
-6. **可观测追踪**：返回 `rag_trace`，包括
-   - 评分结果与路由决策
-   - 重写策略与重写内容
-   - 初次/二次检索结果
-   - 三级检索与合并信息（`leaf_retrieve_level`、`auto_merge_*`）
-   - 检索分数 `score` 与精排分数 `rerank_score`
-
-### 3) 文档入库链路
-
-1. 前端上传 PDF/Word 到 `POST /documents/upload`。
-2. `document_loader.py` 执行三级滑动窗口分块并写入层级元数据（chunk\_id / parent\_chunk\_id / root\_chunk\_id / chunk\_level）。
-3. L1/L2 父级分块写入 `parent_chunk_store.py`（DocStore）。
-4. L3 叶子分块进入 `embedding.py` 生成 Dense 向量与 BM25 Sparse 向量。
-5. `milvus_writer.py` 仅将叶子块向量 + 元数据写入 Milvus。
-6. 后续检索可直接利用新文档参与召回。
-
-### 4) 会话记忆链路
-
-1. 每轮对话按 `user_id/session_id` 通过 PostgresSaver checkpointer 自动持久化到 PostgreSQL。
-2. 前端可通过会话接口读取、删除历史对话。
-3. 当消息过长时触发摘要压缩（SummarizationMiddleware），保留长期上下文。
-
-### 5) 用户画像链路
-
-1. 用户每次发送消息时，后台异步调用 `extract_and_save_user_memory_async(user_text)`。
-2. LLM 从消息中提取结构化用户信息（姓名、学校、身份、兴趣等）。
-3. 通过 PostgresStore 持久化到 PostgreSQL，使用合并模式（只更新非空字段）。
-4. 下次对话时，`system_prompt_middleware` 自动加载用户画像拼接到系统提示词。
-
-### 6) 记忆摘要链路（Hook 自动化）
-
-1. `memory_summary_hook` 通过 `@after_model` 钩子实现，每轮对话后检查是否达到触发轮数（默认25轮）。
-2. 满足条件时，提取最近25轮对话内容，调用 LLM 生成摘要。
-3. 摘要文本生成稠密+稀疏向量，直接写入 Milvus user\_memory collection。
-4. 后续对话可通过 `search_memory` 工具混合检索召回相关记忆。
-
-## 记忆架构（Memory Architecture）
-
-本系统采用**三层记忆架构**，兼顾短期会话上下文、长期结构化用户画像、以及语义层面的记忆检索。
-
-### 架构概览
-
-```mermaid
-graph TB
-    subgraph 第一层_短期记忆
-        A[用户消息] --> B[PostgresSaver Checkpointer]
-        B --> C[对话历史持久化]
-        C --> D[支持会话切换与恢复]
-    end
-
-    subgraph 第二层_用户画像
-        A --> E[extract_and_save_user_memory_async]
-        E --> F[LLM 提取结构化信息]
-        F --> G[PostgresStore 持久化]
-        G --> H[姓名/学校/身份/兴趣...]
-    end
-
-    subgraph 第三层_记忆向量库
-        A --> I[memory_summary_hook]
-        I --> J[每25轮触发摘要]
-        J --> K[LLM 总结对话要点]
-        K --> L[Embedding → Milvus]
-        A --> M[search_memory 工具]
-        M --> N[混合检索召回]
-        N --> O[相关记忆片段]
-    end
-
-    style 第一层_短期记忆 fill:#e1f5fe
-    style 第二层_用户画像 fill:#f3e5f5
-    style 第三层_记忆向量库 fill:#fff3e0
-```
-
-### 三层记忆详解
-
-#### 第一层：短期记忆（PostgresSaver Checkpointer）
-
-负责**即时会话上下文**，通过 `thread_id` 区分不同会话，自动持久化对话历史到 PostgreSQL。
-
-- 文件：`backend/agent.py`
-- 作用：保持长对话上下文，支持会话切换与恢复
-- 触发：每轮对话自动持久化
-
-#### 第二层：用户画像（PostgresStore）
-
-负责**结构化用户信息**，通过 LLM 从对话中自动提取，持久化到 PostgreSQL。
-
-- 文件：`backend/middleware.py` → `UserMemoryManager`
-- 提取内容：姓名、学校、身份、专业、年级、关系、兴趣、位置等
-- 特点：合并模式写入，只更新非空字段，保留已有信息
-
-```mermaid
-graph LR
-    A[用户消息] --> B{关键词检测}
-    B -->|命中| C[LLM 提取结构化信息]
-    B -->|未命中| D[跳过]
-    C --> E[PostgresStore 合并写入]
-    E --> F[namespace: user_memory/global]
-```
-
-#### 第三层：记忆向量库（Milvus + Hybrid RAG）
-
-负责**语义层面的记忆检索**，通过 `memory_summary_hook` 自动摘要对话，通过 `search_memory` 工具召回。
-
-- 文件：`backend/middleware.py` → `memory_summary_hook`
-- 触发条件：每 25 轮对话
-- 召回方式：`search_memory` 混合检索（稠密 + 稀疏 + RRF）
-
-```mermaid
-graph TB
-    A[触发条件满足<br/>user_turns % 25 == 0] --> B[提取最近25轮对话]
-    B --> C[LLM 总结对话要点]
-    C --> D[生成稠密向量]
-    C --> E[生成稀疏向量]
-    D --> F[Milvus 混合检索]
-    E --> F
-    G[search_memory 查询] --> H[Embedding]
-    H --> F
-    F --> I[RRF 排序]
-    I --> J[Top-K 相关记忆]
-```
-
-### 核心组件
-
-| 组件                         | 文件                       | 职责                                          |
-| -------------------------- | ------------------------ | ------------------------------------------- |
-| `memory_summary_hook`      | `middleware.py`          | `@after_model` 钩子，每25轮自动摘要对话并写入 Milvus      |
-| `UserMemoryManager`        | `middleware.py`          | LLM 提取用户信息 + PostgresStore 持久化              |
-| `MemoryVectorStore`        | `memory_vector_store.py` | Milvus user\_memory collection 管理（创建、插入、检索） |
-| `search_memory`            | `tools.py`               | 记忆检索工具，支持混合检索 + RRF 融合                      |
-| `system_prompt_middleware` | `middleware.py`          | 动态拼接系统提示词：soul.md + 用户画像                    |
-
-### 数据流
-
-1. **用户画像构建**：用户对话 → `should_extract_memory` 关键词过滤 → `extract_from_text` LLM 提取 → `save_user_info` 合并写入 PostgresStore
-2. **对话摘要写入**：每25轮 → `memory_summary_hook` 触发 → LLM 总结 → 稠密/稀疏向量 → Milvus
-3. **记忆召回**：用户消息 → `EmbeddingService.get_embeddings` → `MemoryVectorStore.hybrid_search` → Top-K 相关记忆 → 拼接到系统提示词
-
-### 配置项
-
-| 变量                       | 默认值           | 说明                  |
-| ------------------------ | ------------- | ------------------- |
-| `MEMORY_COLLECTION_NAME` | `user_memory` | Milvus collection 名 |
-| `MEMORY_TOP_K`           | `5`           | 向量检索候选数             |
-| `TRIGGER_TURNS`          | `25`          | 摘要触发轮数              |
-
-## 技术栈
-
-- 后端：FastAPI、LangChain Agents、LangGraph、Pydantic、Uvicorn、LangSmith tracing。
-- 向量与检索：Milvus（HNSW 稠密索引 + SPARSE\_INVERTED\_INDEX 稀疏索引）、RRF 融合、Jina Rerank 精排。
-- 嵌入与稀疏：自定义 API 调用获取稠密向量；BM25 手写稀疏向量；同时输出双塔特征。
-- 持久化：PostgreSQL（PostgresSaver checkpointer + PostgresStore）。
-- 前端：Vue 3 (CDN)、marked、highlight.js、纯静态部署。
-- 工具链：dotenv 配置、requests、langchain\_text\_splitters、langchain\_community.loaders。
-
-## 环境变量
-
-需在仓库根目录或运行环境配置（参考 `.env.example`）：
-
-- 模型相关：`API_KEY`、`MODEL`、`BASE_URL`、`EMBEDDER`
-- Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
-- Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
-- PostgreSQL：`POSTGRES_HOST`、`POSTGRES_PORT`、`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`
-- Auto-merging：`AUTO_MERGE_ENABLED`、`AUTO_MERGE_THRESHOLD`、`LEAF_RETRIEVE_LEVEL`
-- 记忆向量库：`MEMORY_COLLECTION_NAME`、`MEMORY_TOP_K`、`TRIGGER_TURNS`
-- 工具：`AMAP_WEATHER_API`、`AMAP_API_KEY`
-
-## API 速览
-
-- `POST /chat`：聊天（非流式），入参 `message`、`user_id`、`session_id`。
-- `POST /chat/stream`：聊天（流式 SSE），入参同上，返回 `text/event-stream`。
-- `GET /sessions/{user_id}`：列出会话。
-- `GET /sessions/{user_id}/{session_id}`：拉取某会话消息。
-- `DELETE /sessions/{user_id}/{session_id}`：删除会话。
-- `GET /documents`：列出已入库文档及 chunk 数。
-- `POST /documents/upload`：上传并向量化 PDF/Word。
-- `DELETE /documents/{filename}`：删除指定文档的向量数据。
+---
 
 ## 流式输出与 RAG Trace — 技术细节
 
-#### 1. 跨线程事件调度（Cross-Thread Event Scheduling）
+### 1) 跨线程事件调度（Cross-Thread Event Scheduling）
 
-这是一个解决 **"同步工具阻塞异步事件循环"** 问题的关键架构设计，常用于 Python 异步 Web 服务与 CPU 密集型/IO 密集型任务的混合场景。
-
-**痛点**：
-FastAPI 运行在单线程的 asyncio Event Loop 上。为了不阻塞主线程，LangChain 通常将同步工具（如 `search_knowledge_base`）放到 `ThreadPoolExecutor` 中运行。但在子线程中，无法直接访问主线程的 `asyncio.Queue`，且 `asyncio.get_event_loop()` 通常会失败。
-
-**解决方案**：
-我们采用了 **"Global Loop Capture + Threadsafe Callback"** 模式：
-
-1. **Loop 捕获 (Main Thread)**:
-   在 Agent 开始生成前，主线程调用 `set_rag_step_queue()`。此时我们捕获当前的运行循环：`_RAG_STEP_LOOP = asyncio.get_running_loop()` 并保存为全局变量。
-2. **跨线程发射 (Worker Thread)**:
-   当 RAG 工具在子线程运行时，调用 `emit_rag_step()`。
-   函数内部使用 `_RAG_STEP_LOOP.call_soon_threadsafe(queue.put_nowait, step_data)`。
-3. **原理**:
-   `call_soon_threadsafe` 是 asyncio 唯一允许从其他线程向 Loop 注入回调的方法。它相当于向主 Loop 的"待办事项箱"投递了一个任务（即 `queue.put_nowait`），主 Loop 会在下一次 tick 立即执行它，从而实现数据的平滑流转。
+FastAPI 运行在单线程 asyncio Event Loop 上，LangChain 同步工具在线程池执行。采用 **"Global Loop Capture + Threadsafe Callback"** 模式解决子线程无法访问主线程 Queue 的问题：
 
 ```python
-# 核心代码摘要 (tools.py)
+# tools.py
 def set_rag_step_queue(queue):
     global _RAG_STEP_QUEUE, _RAG_STEP_LOOP
     _RAG_STEP_QUEUE = queue
-    # 关键：在主线程捕获 Loop
-    _RAG_STEP_LOOP = asyncio.get_running_loop()
+    _RAG_STEP_LOOP = asyncio.get_running_loop()  # 主线程捕获
 
-def emit_rag_step(icon, label):
-    # 关键：从子线程安全调度回主 Loop
+def emit_rag_step(icon, label, detail):
     if _RAG_STEP_LOOP and not _RAG_STEP_LOOP.is_closed():
-        _RAG_STEP_LOOP.call_soon_threadsafe(
-            _RAG_STEP_QUEUE.put_nowait,
-            {"icon": icon, "label": label}
+        _RAG_STEP_LOOP.call_soon_threadsafe(  # 线程安全调度
+            _RAG_STEP_QUEUE.put_nowait, step_data
         )
 ```
 
-> **注意**：RAG 实时步骤显示功能已禁用，但 `emit_rag_step` 架构保留，RAG Trace 在回答完成后仍可查看。
+### 2) 混合检索（Hybrid Search）实现
 
-### 2. 混合检索（Hybrid Search）深度实现
+- **Dense Pathway**：调用 SiliconFlow API 生成 2560 维稠密向量，捕捉语义匹配
+- **Sparse Pathway**：基于 jieba 分词的自定义 BM25 算法，生成 `{word_id: tf_idf_score}` 稀疏向量
+- **RRF 融合**：采用 `k=60` 的倒数排名融合，无参数化合并稠密和稀疏召回结果
 
-项目并非简单调用 Milvus 接口，而是手动构建了工业级的稀疏-稠密双塔检索：
+### 3) 前端状态机
 
-- **Dense Pathway**: 使用 OpenAI `text-embedding-3-small` 生成 1536 维稠密向量，捕捉语义匹配。
-- **Sparse Pathway**:
-  - 在 `embedding.py` 中实现了基于 `jieba` 分词的自定义 BM25 算法。
-  - 生成 `{word_id: tf_idf_score}` 格式的稀疏向量，模拟 ElasticSearch 的关键词匹配能力。
-- **Milvus 融合**:
-  - 使用 Milvus 的 `AnnSearchRequest` 同时发起两个请求。
-  - **RRFRanker (Reciprocal Rank Fusion)**: 采用 `k=60` 的倒数排名融合算法，将两路召回结果无参数化地合并，避免了加权求和中调节 `alpha` 参数的困难。
-
-### 3. 前端 "Thinking State Machine"
-
-前端 `script.js` 维护了一个微型状态机来处理通过 SSE 传回的复杂混合流：
-
-1. **Idle**: 等待用户输入。
-2. **Thinking (Initial)**: 收到请求，创建消息气泡，`isThinking=true`，显示默认动画。
-3. **Thinking (Active RAG)**: 收到 `type: rag_step` 事件。
-   - 状态机保持 `isThinking=true`。
-   - 动态更新 Header 文字（如 "正在重写查询..."）。
-   - 向 `ragSteps` 数组追加步骤，触发 Vue 列表渲染。
-4. **Streaming**: 收到第一个 `type: content` 事件。
-   - **立即切换**: 设置 `isThinking=false`。
-   - 并不销毁气泡，而是隐藏思考 header，开始在同一气泡内追加 Markdown 文本。
-   - 这样实现了从"思考"到"回答"的无缝视觉过渡，没有突兀的 UI 抖动。
-
-## 整体架构
-
-```
-用户发送消息
-    │
-    ▼
-POST /chat/stream → StreamingResponse(text/event-stream)
-    │
-    ▼
-chat_with_agent_stream()
-    │
-    ├── 创建统一输出队列 (asyncio.Queue)
-    ├── 设置 _RagStepProxy → emit_rag_step() 的输出直接入队
-    ├── 启动 _agent_worker 后台任务 (asyncio.create_task)
-    │     └── agent.astream(stream_mode="messages") 逐 token 产出
-    │           ├── AIMessageChunk (文本) → {"type": "content"} 入队
-    │           └── tool_call_chunks (工具调用) → 跳过
-    │
-    └── 主循环：await output_queue.get() → yield SSE
-          ▲
-          │ (并发) RAG 工具在线程池中执行
-          │ emit_rag_step() → loop.call_soon_threadsafe → 入队
-          │ {"type": "rag_step"} 立即从队列取出并推送到前端
+```mermaid
+stateDiagram-v2
+    [*] --> Idle: 用户发送
+    Idle --> ThinkingInitial: 发送消息
+    ThinkingInitial --> ThinkingActiveRAG: 收到 rag_step
+    ThinkingInitial --> Streaming: 收到 content
+    ThinkingActiveRAG --> Streaming: 收到 content
+    Streaming --> [*]: 完成
 ```
 
-### 后端实现
+---
 
-#### 1) 流式生成 (`agent.py`)
+## 环境变量
 
-- 使用 LangGraph `agent.astream(stream_mode="messages")` 获取逐 token 的 `AIMessageChunk`。
-- 过滤 `tool_call_chunks`，只转发文本内容给前端。
-- **关键设计**：Agent 流式循环运行在 `asyncio.create_task` 后台任务中，主生成器只负责从统一 `output_queue` 取事件并 yield。这样 RAG 步骤在工具执行期间（agent 阻塞等待工具返回时）仍然可以实时推送到前端。
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `API_KEY` | — | LLM API 密钥 |
+| `MODEL` | `Qwen/Qwen3.5-122B-A10B` | 主模型 |
+| `BASE_URL` | `https://api.siliconflow.cn/v1` | API 地址 |
+| `EMBEDDER` | `Qwen/Qwen3-Embedding-4B` | 嵌入模型 |
+| `RERANK_MODEL` | `Qwen/Qwen3-Reranker-4B` | 重排模型 |
+| `MILVUS_HOST` | `127.0.0.1` | Milvus 地址 |
+| `MILVUS_PORT` | `19530` | Milvus 端口 |
+| `POSTGRES_HOST` | `127.0.0.1` | PostgreSQL 地址 |
+| `POSTGRES_PORT` | `5433` | PostgreSQL 端口 |
+| `MEMORY_TOP_K` | `5` | 记忆检索候选数 |
+| `TRIGGER_TURNS` | `25` | 摘要触发轮数 |
 
-#### 2) 实时 RAG 步骤推送 (`tools.py` + `rag_pipeline.py`)
+---
 
-- `emit_rag_step(icon, label, detail)` 通过 `asyncio.get_event_loop().call_soon_threadsafe()` 将步骤从同步线程安全地推送到异步队列。
-- `_RagStepProxy` 代理对象将原始 step dict 包装为 `{"type": "rag_step", "step": {...}}` 后放入统一输出队列，**无需额外 relay 任务**。
-- `rag_pipeline.py` 在每个关键节点发射步骤：
-  - `retrieve_initial` → "正在检索知识库..."
-  - `grade_documents` → "正在评估文档相关性..."
-  - `rewrite_question` → "正在重写查询..."（含策略选择）
-  - `retrieve_expanded` → "使用扩展查询重新检索..."
+## 未来迭代（Todo Lists）
 
-#### 3) SSE 协议格式
+### RAG 部分
 
-每个事件格式：`data: {JSON}\n\n`，类型字段：
+#### 数据层、Chunk 分块
+- [ ] 按文档结构做粗拆分，再用递归字符分块兜底
+- [ ] 代码块、表格、图片特殊处理
+- [x] ParentDocument/Auto-merging Retriever 策略
 
-- `content`：文本 token（打字机效果）
-- `rag_step`：RAG 检索步骤（`{icon, label, detail}`）
-- `trace`：完整 RAG 追踪信息（回答完成后发送，可展开查看）
-- `error`：错误信息
-- `[DONE]`：流结束标记
+#### 召回层
+- [ ] BM25 的 k1 和 b 参数扫描
+- [ ] RRF 权重 AB test
+- [ ] 小型标注集比较 Dense/Sparse/Hybrid/Rerank 效果
 
-#### 4) StreamingResponse 配置 (`api.py`)
+#### 生成层
+- [ ] 子问题分解（CoT、专门分解小模型）
+- [ ] 多文档 Refine（一次拼接、串行 Refine）
+- [ ] 多文档冲突处理
 
-```python
-StreamingResponse(
-    event_generator(),
-    media_type="text/event-stream",
-    headers={
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲
-    },
-)
-```
+#### 其他
+- [ ] 多模态 embedding 能力
+- [ ] RAG 评估体系
+- [ ] Rerank 策略评估
 
-### 前端实现
+### 其他能力拓展
+- [ ] SQL assistant Skill
+- [x] 暂停功能与人工介入机制
+- [ ] 问题类型判断，简单问题跳过复杂流程
+- [ ] 网络搜索能力扩展
+- [ ] 多步骤规划与任务并行执行
+- [ ] 路由器节点，LLM 自主判断下一步动作
+- [ ] 记忆管理：集成 MemO、LangMem 等方案
+- [ ] Multi-agent：工具拆分给专业化 agent
+- [ ] 历史会话名称可修改
+- [ ] 死循环检测与恢复
+- [ ] 记忆向量库按用户隔离
+- [ ] 记忆检索结果可视化
 
-#### 1) ReadableStream 解析 (`script.js`)
+### 后端服务建设
+- [ ] 用户注册登录、权限管理
+- [ ] 聊天记录落地数据库，引入 Redis 缓存
 
-- 使用 `response.body.getReader()` + `TextDecoder` 逐块读取。
-- 手动按 `\n\n` 分割 SSE 事件，解析 `data: `       前缀后的 JSON。
-- `content` 事件追加到消息文本；`rag_step` 事件追加到检索步骤数组并同步更新思考状态文字。
-
-#### 2) 思考气泡
-
-- 发送消息后立即创建带 `isThinking: true` 的气泡，显示跳动圆点 + "正在思考中..."。
-- 收到第一个 `content` token 时，`isThinking = false`，气泡无缝切换为正常文本流。
-- RAG Trace 在回答完成后通过可折叠面板展示（`rag_steps_collapsible`）。
-
-#### 3) Vue 3 响应式注意事项
-
-- 通过 `this.messages[botMsgIdx]` 索引访问（而非缓存对象引用），确保拿到 Vue 的 reactive proxy。
-- `ragSteps` 数组通过 `push()` 触发响应式更新。
-
-### 终止功能
-
-#### 前端
-
-- 发送按钮在 `isLoading` 期间切换为红色终止按钮（`v-if/v-else`）。
-- 点击调用 `AbortController.abort()`，取消正在进行的 `fetch` 请求。
-- 捕获 `AbortError`，在气泡中显示"(已终止回答)"。
-
-#### 后端
-
-- FastAPI 的 `StreamingResponse` 在客户端断开连接（如浏览器触发 `abort()` 或关闭标签页）时，会检测到 socket 断开。
-- Python 的生成器协议会向响应生成器抛出 `GeneratorExit` 异常。
-- **实现细节**：采用**主动防御式编程**，显式捕获 `GeneratorExit` 并执行 `agent_task.cancel()`。
-- **为什么不依赖框架自动取消？**：虽然 Starlette/FastAPI 拥有基于 `BaseHTTPMiddleware` 的级联取消机制（Cascading Cancellation），但在复杂的后台任务结构或特定中间件配置下，取消信号可能延迟或在传递链中丢失。显式调用 `.cancel()` 提供了**确定性的资源回收**保证。
-- **即时止损原理**：`agent_task.cancel()` 会立即在任务挂起点注入 `asyncio.CancelledError`。对于流式 LLM 请求，这会触发 `httpx` 关闭 TCP 连接。服务端（OpenAI 等）检测到 client 掉线后会立即停止推理，从而实现**真正的 Token 节省**。
+---
 
 ## 更新日志
 
 ### 2026-03-27 会话列表数据库落地
 
-- **ConversationStorage 迁移**：会话列表元数据从 `customer_service_history.json` 迁移到 PostgreSQL `conversations` 表，提升并发访问稳定性。
-- **新增迁移脚本**：`backend/migrate_sessions_to_pg.py` 用于一次性迁移历史数据。
+- **ConversationStorage 迁移**：会话列表元数据从 `customer_service_history.json` 迁移到 PostgreSQL `conversations` 表
+- **新增迁移脚本**：`backend/migrate_sessions_to_pg.py`
 
 ### 2026-03-22 用户记忆持久化 + RAG 实时显示优化
 
-- **新增用户记忆功能**：通过 `middleware.py` 中的 `UserMemoryManager`，使用 LLM 自动从对话中提取用户信息（姓名、学校、身份、兴趣等），通过 PostgresStore 持久化到 PostgreSQL。下次对话时自动加载到系统提示词。
-- **PostgresSaver checkpointer**：会话记忆从本地 JSON 文件迁移到 PostgreSQL，支持跨进程持久化。
-- **RAG 实时显示优化**：移除 DEBUG 日志输出，优化前端显示逻辑。RAG 步骤在回答完成后通过可折叠面板展示。
-- **移除** **`SystemMessage`** **冲突**：改用将系统提示词作为文本前缀拼接到用户消息中，避免 `"System message must be at the beginning"` 错误。
+- **新增用户记忆功能**：通过 `UserMemoryManager` 自动提取用户信息并持久化
+- **PostgresSaver checkpointer**：会话记忆迁移到 PostgreSQL
+- **RAG 实时显示优化**：RAG 步骤通过可折叠面板展示
+- **移除 SystemMessage 冲突**：系统提示词作为文本前缀拼接
 
 ### 2026-03-13 三级分块与 Auto-merging 升级
 
-- 新增三级滑动窗口分块（L1/L2/L3），并为分块写入层级元数据。
-- 存储策略调整为 Leaf-only：仅 L3 叶子块写入 Milvus，L1/L2 写入本地 DocStore。
-- Auto-merging 改为从 DocStore 拉取父块，减少向量冗余存储。
-- 思考链路新增三级检索与自动合并步骤事件。
-- `rag_trace` 新增 `leaf_retrieve_level` 与 `auto_merge_*` 字段，且历史会话读取同样保留这些字段。
+- 新增三级滑动窗口分块（L1/L2/L3）
+- Leaf-only 存储策略：L3 写入 Milvus，L1/L2 写入 DocStore
+- Auto-merging 从 DocStore 拉取父块
 
 ### 2026-02-19 RAG 实时思考链路修复
 
-- **问题**：Agent 在执行同步工具（如 `search_knowledge_base`）时，由于运行在线程池中，无法正确获取主线程的 asyncio 事件循环，导致 `emit_rag_step` 事件丢失，前端"思考中"气泡一直静止。
-- **修复**：
-  1. **Backend (`tools.py`)**：在 `set_rag_step_queue` 中显式捕获主线程的 `loop`。
-  2. **Backend (`tools.py`)**：更新 `emit_rag_step` 使用捕获的 `_RAG_STEP_LOOP.call_soon_threadsafe` 跨线程调度事件。
-  3. **Frontend (`script.js`)**：在发送消息时初始化空的 `ragSteps: []` 数组，确保 Vue 响应式系统能立即追踪后续的 push 操作。
-- **效果**：用户提问后，思考气泡内实时跳动显示检索步骤（如"🔍 正在检索知识库..." -> "📊 正在评估文档相关性..."），不再只有静态的"正在思考中..."。
-
+- 修复同步工具无法获取主线程 asyncio 事件循环的问题
+- 采用 `call_soon_threadsafe` 跨线程调度 RAG 步骤事件
