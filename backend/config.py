@@ -38,6 +38,15 @@ LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
 AMAP_WEATHER_API = os.getenv("AMAP_WEATHER_API")
 AMAP_API_KEY = os.getenv("AMAP_API_KEY")
 
+# ===== Tavily Web Search =====
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+WEB_SEARCH_COLLECTION = os.getenv("WEB_SEARCH_COLLECTION", "web_search_cache")
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+WEB_SEARCH_TOP_K = int(os.getenv("WEB_SEARCH_TOP_K", "5"))
+WEB_SEARCH_CHUNK_SIZE = int(os.getenv("WEB_SEARCH_CHUNK_SIZE", "1200"))
+WEB_SEARCH_CHUNK_OVERLAP = int(os.getenv("WEB_SEARCH_CHUNK_OVERLAP", "150"))
+WEB_SEARCH_MAX_CHUNKS_PER_RESULT = int(os.getenv("WEB_SEARCH_MAX_CHUNKS_PER_RESULT", "4"))
+
 # ===== Server =====
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
