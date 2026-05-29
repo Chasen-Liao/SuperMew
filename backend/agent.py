@@ -14,7 +14,7 @@ from middleware import memory_summary_hook, extract_and_save_user_memory_async, 
 from langchain_core.messages import AIMessageChunk
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.store.postgres import PostgresStore
-from tools import get_current_weather, search_knowledge_base, search_memory, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
+from tools import get_current_weather, search_knowledge_base, search_memory, search_web, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
 from datetime import datetime
 from config import API_KEY, MODEL, BASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
 
@@ -129,7 +129,7 @@ def create_agent_instance():
 
     agent = create_agent(
         model=model,
-        tools=[get_current_weather, search_knowledge_base, search_memory],
+        tools=[get_current_weather, search_knowledge_base, search_memory, search_web],
         checkpointer=checkpointer,
         store=store,
         context_schema=Context,
