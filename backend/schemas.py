@@ -11,12 +11,15 @@ class ChatRequest(BaseModel):
 
 class RetrievedChunk(BaseModel):
     """检索到的文档块"""
-    filename: str = Field(..., description="来源文件名")
+    filename: Optional[str] = Field(default=None, description="来源文件名")
+    title: Optional[str] = Field(default=None, description="网页标题")
+    url: Optional[str] = Field(default=None, description="网页URL")
     page_number: Optional[str | int] = Field(default=None, description="页码")
     text: Optional[str] = Field(default=None, description="文档块文本内容")
     score: Optional[float] = Field(default=None, description="相似度分数")
     rrf_rank: Optional[int] = Field(default=None, description="RRF排名")
     rerank_score: Optional[float] = Field(default=None, description="重排序分数")
+    source_rank: Optional[int] = Field(default=None, description="搜索结果原始排名")
 
 
 class RagTrace(BaseModel):
@@ -42,6 +45,9 @@ class RagTrace(BaseModel):
     rerank_error: Optional[str] = Field(default=None, description="重排序错误")
     retrieval_mode: Optional[str] = Field(default=None, description="检索模式")
     candidate_k: Optional[int] = Field(default=None, description="候选数量K")
+    web_source_count: Optional[int] = Field(default=None, description="联网搜索来源网页数")
+    web_chunk_count: Optional[int] = Field(default=None, description="联网搜索索引分块数")
+    web_error: Optional[str] = Field(default=None, description="联网搜索错误")
     leaf_retrieve_level: Optional[int] = Field(default=None, description="叶子检索层级")
     auto_merge_enabled: Optional[bool] = Field(default=None, description="是否启用自动合并")
     auto_merge_applied: Optional[bool] = Field(default=None, description="是否应用自动合并")

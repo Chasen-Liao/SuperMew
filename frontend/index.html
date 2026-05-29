@@ -250,6 +250,15 @@
                                 <div v-if="msg.ragTrace.candidate_k" class="trace-line">
                                     候选召回数：{{ msg.ragTrace.candidate_k }}
                                 </div>
+                                <div v-if="msg.ragTrace.web_source_count !== null && msg.ragTrace.web_source_count !== undefined" class="trace-line">
+                                    网页来源：{{ msg.ragTrace.web_source_count }}
+                                </div>
+                                <div v-if="msg.ragTrace.web_chunk_count !== null && msg.ragTrace.web_chunk_count !== undefined" class="trace-line">
+                                    网页分块：{{ msg.ragTrace.web_chunk_count }}
+                                </div>
+                                <div v-if="msg.ragTrace.web_error" class="trace-line">
+                                    联网错误：{{ msg.ragTrace.web_error }}
+                                </div>
                                 <div v-if="msg.ragTrace.leaf_retrieve_level" class="trace-line">
                                     叶子召回层级：L{{ msg.ragTrace.leaf_retrieve_level }}
                                 </div>
@@ -297,8 +306,11 @@
                                     <ul class="sources-list">
                                         <li v-for="(chunk, sIndex) in msg.ragTrace.initial_retrieved_chunks" :key="sIndex" class="source-item">
                                             <div class="source-title-line">
-                                                <span class="source-file">{{ chunk.filename }}</span>
+                                                <span class="source-file">{{ chunk.title || chunk.filename || 'Unknown Source' }}</span>
                                                 <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
+                                                <a v-if="chunk.url" class="source-url" :href="chunk.url" target="_blank" rel="noopener noreferrer">
+                                                    {{ chunk.url }}
+                                                </a>
                                             </div>
                                             <div class="source-meta-line">
                                                 <span class="source-page">RRF名次：#{{ chunk.rrf_rank || (sIndex + 1) }}</span>
@@ -313,8 +325,11 @@
                                     <ul class="sources-list">
                                         <li v-for="(chunk, sIndex) in msg.ragTrace.expanded_retrieved_chunks" :key="sIndex" class="source-item">
                                             <div class="source-title-line">
-                                                <span class="source-file">{{ chunk.filename }}</span>
+                                                <span class="source-file">{{ chunk.title || chunk.filename || 'Unknown Source' }}</span>
                                                 <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
+                                                <a v-if="chunk.url" class="source-url" :href="chunk.url" target="_blank" rel="noopener noreferrer">
+                                                    {{ chunk.url }}
+                                                </a>
                                             </div>
                                             <div class="source-meta-line">
                                                 <span class="source-page">RRF名次：#{{ chunk.rrf_rank || (sIndex + 1) }}</span>
@@ -329,8 +344,11 @@
                                     <ul class="sources-list">
                                         <li v-for="(chunk, sIndex) in msg.ragTrace.retrieved_chunks" :key="sIndex" class="source-item">
                                             <div class="source-title-line">
-                                                <span class="source-file">{{ chunk.filename }}</span>
+                                                <span class="source-file">{{ chunk.title || chunk.filename || 'Unknown Source' }}</span>
                                                 <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
+                                                <a v-if="chunk.url" class="source-url" :href="chunk.url" target="_blank" rel="noopener noreferrer">
+                                                    {{ chunk.url }}
+                                                </a>
                                             </div>
                                             <div class="source-meta-line">
                                                 <span class="source-page">RRF名次：#{{ chunk.rrf_rank || (sIndex + 1) }}</span>
