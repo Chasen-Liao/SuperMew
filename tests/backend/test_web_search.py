@@ -4,7 +4,7 @@ import sys
 BACKEND_DIR = Path(__file__).resolve().parents[2] / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from web_search import normalize_tavily_response, build_web_chunks
+from web_search import WebSearchService, normalize_tavily_response, build_web_chunks
 from web_search_vector_store import WebSearchVectorStore
 
 
@@ -161,3 +161,71 @@ def test_web_search_vector_store_inserts_embeddings_and_metadata():
     assert client.inserted[0]["sparse_embedding"] == {1: 0.4}
     assert client.inserted[0]["url"] == "https://example.com"
     assert client.inserted[0]["search_id"] == "search-1"
+
+
+class FakeTavilySearch:
+    def invoke(self, payload):
+        assert payload == {"query": "latest LangChain Tavily integration"}
+        return {
+            "results": [
+                {
+                    "title": "Tavily LangChain",
+                    "url": "https://docs.tavily.com/documentation/integrations/langchain",
+                    "content": "LangChain integration snippet",
+                    "raw_content": "LangChain Tavily integration raw content " * 80,
+                    "score": 0.88,
+                }
+            ]
+        }
+
+
+class FakeWebSearchStore:
+    def __init__(self):
+        self.written_chunks = []
+        self.deleted_search_ids = []
+
+    def write_chunks(self, chunks):
+        self.written_chunks = chunks
+        return {"insert_count": len(chunks)}
+
+    def hybrid_retrieve(self, query, search_id, top_k):
+        assert query == "latest LangChain Tavily integration"
+        assert search_id == self.written_chunks[0]["search_id"]
+        assert top_k == 2
+        return [
+            {
+                "title": "Tavily LangChain",
+                "url": "https://docs.tavily.com/documentation/integrations/langchain",
+                "snippet": "LangChain integration snippet",
+                "text": "LangChain Tavily integration raw content",
+                "source_rank": 1,
+                "chunk_idx": 0,
+                "score": 0.77,
+                "rrf_rank": 1,
+            }
+        ]
+
+    def delete_search(self, search_id):
+        self.deleted_search_ids.append(search_id)
+        return {"delete_count": 1}
+
+
+def test_web_search_service_searches_indexes_retrieves_and_cleans_up():
+    store = FakeWebSearchStore()
+    service = WebSearchService(
+        tavily_tool=FakeTavilySearch(),
+        vector_store=store,
+        max_results=3,
+        top_k=2,
+        chunk_size=300,
+        chunk_overlap=20,
+        max_chunks_per_result=2,
+    )
+
+    result = service.search_and_retrieve("latest LangChain Tavily integration")
+
+    assert result["query"] == "latest LangChain Tavily integration"
+    assert result["source_count"] == 1
+    assert result["chunk_count"] >= 1
+    assert result["retrieved_chunks"][0]["url"] == "https://docs.tavily.com/documentation/integrations/langchain"
+    assert store.deleted_search_ids == [store.written_chunks[0]["search_id"]]
