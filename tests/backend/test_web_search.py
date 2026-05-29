@@ -6,6 +6,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from web_search import WebSearchService, normalize_tavily_response, build_web_chunks
 from web_search_vector_store import WebSearchVectorStore
+import tools
 
 
 def test_normalize_tavily_response_keeps_core_fields():
@@ -229,3 +230,49 @@ def test_web_search_service_searches_indexes_retrieves_and_cleans_up():
     assert result["chunk_count"] >= 1
     assert result["retrieved_chunks"][0]["url"] == "https://docs.tavily.com/documentation/integrations/langchain"
     assert store.deleted_search_ids == [store.written_chunks[0]["search_id"]]
+
+
+class FakeWebSearchServiceForTool:
+    def search_and_retrieve(self, query):
+        return {
+            "query": query,
+            "source_count": 1,
+            "chunk_count": 1,
+            "retrieved_chunks": [
+                {
+                    "title": "Tavily LangChain",
+                    "url": "https://docs.tavily.com/documentation/integrations/langchain",
+                    "text": "Tavily provides a current LangChain integration.",
+                    "score": 0.91,
+                    "rrf_rank": 1,
+                    "source_rank": 1,
+                }
+            ],
+            "error": None,
+        }
+
+
+def test_search_web_tool_formats_sources_and_sets_trace(monkeypatch):
+    tools.reset_tool_call_guards()
+    tools.get_last_rag_context(clear=True)
+    monkeypatch.setattr(tools, "WebSearchService", lambda: FakeWebSearchServiceForTool())
+
+    result = tools.search_web.invoke({"query": "LangChain Tavily integration"})
+    context = tools.get_last_rag_context(clear=True)
+
+    assert "【联网搜索结果】" in result
+    assert "Tavily LangChain" in result
+    assert "https://docs.tavily.com/documentation/integrations/langchain" in result
+    assert context["rag_trace"]["tool_name"] == "search_web"
+    assert context["rag_trace"]["retrieved_chunks"][0]["url"] == "https://docs.tavily.com/documentation/integrations/langchain"
+
+
+def test_search_web_tool_guard_allows_one_call_per_turn(monkeypatch):
+    tools.reset_tool_call_guards()
+    monkeypatch.setattr(tools, "WebSearchService", lambda: FakeWebSearchServiceForTool())
+
+    first = tools.search_web.invoke({"query": "first query"})
+    second = tools.search_web.invoke({"query": "second query"})
+
+    assert "【联网搜索结果】" in first
+    assert "TOOL_CALL_LIMIT_REACHED" in second

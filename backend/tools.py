@@ -6,9 +6,11 @@ except ImportError:
     from langchain_core.tools import tool
 
 from config import AMAP_WEATHER_API, AMAP_API_KEY
+from web_search import WebSearchService
 
 _LAST_RAG_CONTEXT = None
 _KNOWLEDGE_TOOL_CALLS_THIS_TURN = 0
+_WEB_SEARCH_TOOL_CALLS_THIS_TURN = 0
 _RAG_STEP_QUEUE = None  # asyncio.Queue, set by agent before streaming
 _RAG_STEP_LOOP = None   # asyncio loop, captured when setting queue
 
@@ -29,8 +31,9 @@ def get_last_rag_context(clear: bool = True) -> Optional[dict]:
 
 def reset_tool_call_guards():
     """每轮对话开始时重置工具调用计数。"""
-    global _KNOWLEDGE_TOOL_CALLS_THIS_TURN
+    global _KNOWLEDGE_TOOL_CALLS_THIS_TURN, _WEB_SEARCH_TOOL_CALLS_THIS_TURN
     _KNOWLEDGE_TOOL_CALLS_THIS_TURN = 0
+    _WEB_SEARCH_TOOL_CALLS_THIS_TURN = 0
 
 
 def set_rag_step_queue(queue):
@@ -161,6 +164,72 @@ def search_memory(query: str) -> str:
 
     except Exception as e:
         return f"记忆检索失败: {e}"
+
+
+@tool("search_web")
+def search_web(query: str) -> str:
+    """Search the public web using Tavily, index results into Milvus, and return relevant source chunks.
+
+    Use this tool for current events, latest information, public internet facts,
+    or questions that explicitly require web search. Cite source URLs in the final answer.
+    """
+    global _WEB_SEARCH_TOOL_CALLS_THIS_TURN
+    if _WEB_SEARCH_TOOL_CALLS_THIS_TURN >= 1:
+        return (
+            "TOOL_CALL_LIMIT_REACHED: search_web has already been called once in this turn. "
+            "Use the existing web search result and provide the final answer directly."
+        )
+    _WEB_SEARCH_TOOL_CALLS_THIS_TURN += 1
+
+    if not query or not query.strip():
+        return "query 参数不能为空"
+
+    try:
+        emit_rag_step("🌐", "正在联网搜索...", f"查询: {query[:50]}")
+        service = WebSearchService()
+        result = service.search_and_retrieve(query.strip())
+        chunks = result.get("retrieved_chunks", [])
+        error = result.get("error")
+
+        rag_trace = {
+            "tool_used": True,
+            "tool_name": "search_web",
+            "query": result.get("query", query),
+            "retrieval_stage": "web_search",
+            "retrieval_mode": "tavily_milvus_hybrid",
+            "candidate_k": result.get("chunk_count", 0),
+            "retrieved_chunks": chunks,
+            "initial_retrieved_chunks": chunks,
+            "web_source_count": result.get("source_count", 0),
+            "web_chunk_count": result.get("chunk_count", 0),
+            "web_error": error,
+        }
+        _set_last_rag_context({"rag_trace": rag_trace})
+
+        if error:
+            emit_rag_step("⚠️", "联网搜索失败", error)
+            return f"联网搜索失败：{error}"
+
+        emit_rag_step(
+            "✅",
+            f"联网搜索完成，找到 {len(chunks)} 个相关片段",
+            f"来源: {result.get('source_count', 0)} 个网页",
+        )
+
+        if not chunks:
+            return "No relevant web results found."
+
+        formatted = []
+        for i, item in enumerate(chunks, 1):
+            title = item.get("title", "Untitled")
+            url = item.get("url", "")
+            text = item.get("text", "")
+            score = item.get("score", 0)
+            formatted.append(f"[{i}] {title}\nURL: {url}\n相关度: {score:.3f}\n{text}")
+        return "【联网搜索结果】\n" + "\n\n---\n\n".join(formatted)
+    except Exception as e:
+        emit_rag_step("⚠️", "联网搜索异常", str(e))
+        return f"联网搜索失败: {e}"
 
 
 @tool("search_knowledge_base")
